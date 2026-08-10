@@ -36,6 +36,12 @@ public sealed partial class SourceItemViewModel : ObservableObject
     [ObservableProperty] private int _captureQuality = 100;
     [ObservableProperty] private bool _captureIncludeAudio = true;
 
+    /// <summary>Set by MainViewModel from MasterHost's AdaptiveSettingsChanged event — null unless
+    /// AdaptiveEncodingController has actually stepped this capture below its configured target,
+    /// so the operator sees honestly when/why the stream isn't running at what they set rather
+    /// than that happening silently.</summary>
+    [ObservableProperty] private string? _adaptiveStatusText;
+
     public bool IsText => Type == SourceType.Text;
     public bool IsImage => Type == SourceType.Image;
     public bool IsColor => Type == SourceType.Background;

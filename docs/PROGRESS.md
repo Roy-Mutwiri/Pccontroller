@@ -379,6 +379,63 @@ both rather than assuming the previous fix was simply insufficient.
       rendered — frozen-looking, not blank, but also not something screen-capture code can force an
       app to render differently.
 
+## Adaptive quality: the lag was real bandwidth, not another bug (2026-08-10)
+
+User reported lag a third time after two rounds of confirmed, real architectural fixes. Rather
+than guess again, measured it — see below — and asked the user directly how to resolve the
+resulting tradeoff, since it's genuinely a product decision, not a bug to unilaterally fix.
+
+- [x] **Measurement, not another guess**: a new diagnostic test (`CapturePerformanceDiagnosticTests`)
+      captured this actual machine's real screen at every combination of {quality 70/100} ×
+      {maxDimension 1280/3840}. Local capture+encode hit ~30 FPS in every case — never the
+      bottleneck, target is only 12. But frame size scaled hugely with quality: ~604KB/frame at
+      quality 100 vs ~156KB/frame at quality 70 (~4x), while encode *time* barely moved (31-33ms
+      regardless of settings) — quality mostly costs bandwidth, not local CPU. At 12 FPS, quality
+      100 needs ~58 Mbps sustained upload for just one capture; quality 70 needs ~15 Mbps.
+- [x] Checked `tailscale status`: PC1↔PC2 is a **direct** connection (`active; direct
+      105.160.90.235:1416`), not relayed through a DERP server — rules out relay throughput caps
+      as the cause. Combined with the measurement above, the remaining explanation is real internet
+      upload bandwidth, which no software architecture fix can create out of nothing.
+- [x] Asked the user directly: keep quality maxed and accept the lag, lower the default now, or
+      auto-adjust dynamically. **Chose auto-adjust** — quality 100/4K stays the starting point, but
+      backs off automatically when a link can't sustain it, and climbs back up when it can.
+- [x] `MediaHub.FrameDropped` (sourceId) — fires when a broadcast frame has to overwrite one a
+      subscriber's pump hasn't sent yet (the drop-oldest queue from the earlier lag fix already
+      made this happen; it just didn't used to tell anyone). This is the real, direct signal that a
+      subscriber's link can't keep up at the current data rate — not a heuristic.
+- [x] `AdaptiveEncodingController` — a small, pure state machine per capture source, deliberately
+      driven by explicit timestamps passed in rather than reading the clock itself (fully
+      deterministic to test, no real timers). 3 drops within a rolling 3s window step quality down
+      15 points (floor 40) before touching resolution (floor 640px, ×0.75 per step) — quality
+      first because the measurement above showed it's the cheap lever, barely affecting local CPU.
+      12 consecutive seconds with no drops steps back up one increment at a time, resolution first
+      then quality — the reverse order, since resolution is usually the more visible loss and
+      should be the last thing still missing once a link recovers. An explicit Properties-panel
+      edit always overrides any in-progress throttle immediately (an explicit user choice should
+      win, not be cautiously eased into).
+- [x] Wired into `MasterHost`: `MediaHub.FrameDropped` steps a source's controller down and
+      restarts that capture at the new settings; the existing 50ms broadcast timer also ticks every
+      controller once each pass to check for step-up eligibility (cheap enough to piggyback on
+      rather than adding a second timer). Deliberately a *separate* restart path from
+      `UpdateCaptureSettings` — automatic throttling never overwrites the source's saved Config, so
+      an operator's actual configured intent survives a resync even while a transient throttle is
+      active.
+- [x] Properties panel now shows an honest, visible note ("Auto-reduced to quality X, Ypx — a
+      subscriber's connection can't keep up...") whenever a capture is actually running below its
+      configured target — deliberately not silent, per the project's own "don't fake functionality"
+      standard applied to *transparency* this time, not just correctness.
+- [x] 9 new deterministic unit tests for the state machine itself (traced by hand against the
+      implementation, not just run-and-hope) covering: threshold/window behavior, quality-before-
+      resolution ordering both directions, both floors under sustained pressure, step-up cooldown
+      timing, and explicit-target overriding an active throttle. Plus 1 new `MediaHub` test proving
+      `FrameDropped` fires exactly when a subscriber falls behind (a 2nd queued frame alone isn't a
+      drop — only a 3rd arriving while the 2nd is still waiting is). Full solution: 59/59, run
+      twice for stability.
+- [ ] Not yet live-verified against PC2/PC3 whether this actually keeps video smooth over the real
+      link — the mechanism is proven correct in isolation (unit tests) but the end-to-end
+      step-down-then-recover behavior over a real, varying internet connection hasn't been watched
+      happen live yet.
+
 ## Next up
 
 Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source

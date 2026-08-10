@@ -21,6 +21,11 @@ namespace TradeFix.Network.Media;
 /// as the backlog fell further behind real time. Now a slow node simply misses frames and always
 /// gets shown the most current one once its link catches up — standard live-broadcast behavior
 /// (the same tradeoff OBS makes when encoding falls behind: drop, don't queue).
+///
+/// Dropping frames fixes the lag, but it's also a live signal that the current encode settings
+/// exceed what a subscriber's link can carry — <see cref="FrameDropped"/> surfaces that so
+/// <c>AdaptiveEncodingController</c> can step quality/resolution down automatically instead of a
+/// subscriber just perpetually missing frames at a fixed high data rate.
 /// </summary>
 public sealed class MediaHub(ILogSink? log = null)
 {
@@ -43,17 +48,34 @@ public sealed class MediaHub(ILogSink? log = null)
     public int SubscriberCount(string sourceId) =>
         _subscribers.TryGetValue(sourceId, out var set) ? set.Count : 0;
 
+    /// <summary>Fires when a broadcast frame had to replace one a subscriber hadn't finished
+    /// sending yet — the real signal that a subscriber's link can't keep up with the current
+    /// encode settings, used to drive <c>TradeFix.Master.Services.AdaptiveEncodingController</c>.
+    /// Fired at most once per <see cref="BroadcastFrameAsync"/> call, even if several subscribers
+    /// of the same source dropped a frame on the same call.</summary>
+    public event Action<string>? FrameDropped;
+
     /// <summary>Hands the frame to every current subscriber's queue and returns immediately —
     /// never waits on a network send, so a slow subscriber can never slow down capture or other
     /// subscribers. If a subscriber hasn't finished sending the previous frame yet, this one
-    /// silently replaces it (only the latest frame is ever worth sending for a live feed).</summary>
+    /// silently replaces it (only the latest frame is ever worth sending for a live feed) and
+    /// <see cref="FrameDropped"/> fires for that source.</summary>
     public Task BroadcastFrameAsync(string sourceId, ReadOnlyMemory<byte> frameBytes, CancellationToken cancellationToken)
     {
         if (_subscribers.TryGetValue(sourceId, out var set))
         {
+            var anyDropped = false;
             foreach (var pump in set.Values)
             {
-                pump.Post(frameBytes);
+                if (pump.Post(frameBytes))
+                {
+                    anyDropped = true;
+                }
+            }
+
+            if (anyDropped)
+            {
+                FrameDropped?.Invoke(sourceId);
             }
         }
 
@@ -74,7 +96,14 @@ public sealed class MediaHub(ILogSink? log = null)
             _pumpTask = Task.Run(() => PumpAsync(log, sourceId, onDead));
         }
 
-        public void Post(ReadOnlyMemory<byte> frame) => _channel.Writer.TryWrite(frame);
+        /// <returns>true if this write replaced a frame the pump hadn't sent yet (i.e. this
+        /// subscriber is falling behind at the current data rate).</returns>
+        public bool Post(ReadOnlyMemory<byte> frame)
+        {
+            var droppingExisting = _channel.Reader.Count > 0;
+            _channel.Writer.TryWrite(frame);
+            return droppingExisting;
+        }
 
         public void Stop()
         {

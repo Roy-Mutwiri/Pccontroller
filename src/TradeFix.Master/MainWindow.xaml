@@ -392,6 +392,13 @@
                                       IsChecked="{Binding SelectedSource.CaptureIncludeAudio}"
                                       Foreground="{StaticResource Brush.TextPrimary}" Margin="0,0,0,10" />
                             <Button Content="Apply Capture Settings" Style="{StaticResource Button.Primary}" Command="{Binding ApplyCaptureSettingsCommand}" />
+
+                            <Border Background="{StaticResource Brush.SurfaceAlt}" BorderBrush="{StaticResource Brush.Warning}"
+                                    BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,10,0,0"
+                                    Visibility="{Binding SelectedSource.AdaptiveStatusText, Converter={StaticResource NullToVisibility}}">
+                                <TextBlock Text="{Binding SelectedSource.AdaptiveStatusText}" Foreground="{StaticResource Brush.Warning}"
+                                           FontSize="10" TextWrapping="Wrap" />
+                            </Border>
                         </StackPanel>
 
                         <Button Content="Delete Source" Command="{Binding RemoveSelectedSourceCommand}" Margin="0,14,0,0" />

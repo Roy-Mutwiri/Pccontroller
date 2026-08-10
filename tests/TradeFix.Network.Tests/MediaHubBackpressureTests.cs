@@ -86,6 +86,44 @@ public sealed class MediaHubBackpressureTests
         Assert.Equal(frame3, sent[1]);
     }
 
+    /// <summary>Drives <c>AdaptiveEncodingController</c> on the Master side — proves MediaHub
+    /// raises the signal exactly when a subscriber actually falls behind, and not merely because
+    /// its previous frame is still being sent (that alone doesn't drop anything — the channel has
+    /// room for one frame to wait). A drop only happens when a THIRD frame arrives while a second
+    /// one is already waiting behind the one currently in flight.</summary>
+    [Fact]
+    public async Task FrameDropped_FiresOnlyWhenASubscriberActuallyFallsBehind()
+    {
+        var hub = new MediaHub();
+        var socket = new GatedWebSocket();
+        hub.RegisterSubscriber("src", socket);
+
+        var droppedSourceIds = new List<string>();
+        hub.FrameDropped += sourceId => droppedSourceIds.Add(sourceId);
+
+        // frame1: nothing pending yet, subscriber is idle — no drop. Its send then gets stuck.
+        await hub.BroadcastFrameAsync("src", new byte[] { 1 }, CancellationToken.None);
+
+        var sendStarted = DateTime.UtcNow.AddSeconds(5);
+        while (!socket.SendInProgress && DateTime.UtcNow < sendStarted)
+        {
+            await Task.Delay(20);
+        }
+        Assert.True(socket.SendInProgress, "The fake socket's send never started — test setup is broken");
+
+        // frame2: frame1's send is stuck, but the channel has room for one frame to simply wait
+        // its turn — not a drop yet.
+        await hub.BroadcastFrameAsync("src", new byte[] { 2 }, CancellationToken.None);
+        Assert.Empty(droppedSourceIds);
+
+        // frame3: frame2 is still waiting (frame1 hasn't finished sending), so this one has to
+        // overwrite frame2 — a genuine drop.
+        await hub.BroadcastFrameAsync("src", new byte[] { 3 }, CancellationToken.None);
+        Assert.Equal(["src"], droppedSourceIds);
+
+        socket.ReleaseSend();
+    }
+
     /// <summary>A WebSocket test double whose SendAsync blocks until released — simulates a
     /// subscriber whose network link is too slow to keep up, deterministically rather than relying
     /// on real (flaky, unforceable) network delay.</summary>

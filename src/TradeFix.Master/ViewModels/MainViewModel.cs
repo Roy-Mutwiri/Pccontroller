@@ -85,6 +85,19 @@ public sealed partial class MainViewModel : ObservableObject
             pump.Post(jpegBytes);
         };
 
+        host.AdaptiveSettingsChanged += (sourceId, isThrottled, quality, maxDimension) => _dispatcher.Invoke(() =>
+        {
+            var item = ActiveSceneSources.FirstOrDefault(s => s.Id == sourceId);
+            if (item is null)
+            {
+                return;
+            }
+
+            item.AdaptiveStatusText = isThrottled
+                ? $"Auto-reduced to quality {quality}, {maxDimension}px — a subscriber's connection can't keep up at your configured settings"
+                : null;
+        });
+
         foreach (var entry in host.LogSink.Snapshot().TakeLast(50))
         {
             RecentLogLines.Add(Format(entry));

@@ -35,6 +35,8 @@ public sealed class MasterHost : IAsyncDisposable
     private readonly Dictionary<string, SourceDefinition> _dirtyTransforms = new();
     private readonly Dictionary<string, ScreenCaptureService> _activeCaptures = new();
     private readonly Dictionary<string, AudioCaptureService> _activeAudioCaptures = new();
+    private readonly object _adaptiveLock = new();
+    private readonly Dictionary<string, AdaptiveEncodingController> _adaptiveControllers = new();
 
     public MasterSettings Settings { get; }
     public LogBus Log { get; } = new();
@@ -52,6 +54,13 @@ public sealed class MasterHost : IAsyncDisposable
     /// placeholder. Fired from a background capture thread; subscribers must marshal to the UI
     /// thread themselves.</summary>
     public event Action<string, byte[]>? LocalCaptureFrame;
+
+    /// <summary>Fires whenever <see cref="AdaptiveEncodingController"/> steps a capture's
+    /// quality/resolution up or down — (sourceId, isThrottled, quality, maxDimension) — so the UI
+    /// can honestly show when a source is running below its configured target instead of that
+    /// happening silently. Fired from whichever thread triggered the step (a capture thread for a
+    /// step-down, the broadcast timer thread for a step-up); subscribers must marshal themselves.</summary>
+    public event Action<string, bool, int, int>? AdaptiveSettingsChanged;
 
     private string? _startupWarning;
     public string? StartupWarning => _startupWarning;
@@ -89,8 +98,96 @@ public sealed class MasterHost : IAsyncDisposable
         };
 
         // Coalesces rapid drag/resize updates to a fixed max send rate instead of one network
-        // message per mouse-move event (spec section 37: don't flood the network).
-        _broadcastTimer = new System.Threading.Timer(_ => FlushDirtyTransforms(), null, BroadcastInterval, BroadcastInterval);
+        // message per mouse-move event (spec section 37: don't flood the network). Also drives
+        // AdaptiveEncodingController's step-up recovery check — cheap enough to piggyback on the
+        // same timer rather than adding a second one just for that.
+        _broadcastTimer = new System.Threading.Timer(_ =>
+        {
+            FlushDirtyTransforms();
+            TickAdaptiveControllers();
+        }, null, BroadcastInterval, BroadcastInterval);
+
+        MediaHub.FrameDropped += OnVideoFrameDropped;
+    }
+
+    /// <summary>A subscriber of this video source couldn't keep up with the last frame — the
+    /// real-world signal that current quality/resolution exceeds what its link can carry. Steps
+    /// the source's <see cref="AdaptiveEncodingController"/> down if this is the 3rd drop within
+    /// its rolling window; see that class for why quality is reduced before resolution.</summary>
+    private void OnVideoFrameDropped(string sourceId)
+    {
+        AdaptiveEncodingController? controller;
+        bool steppedDown;
+        int quality, maxDimension;
+        lock (_adaptiveLock)
+        {
+            if (!_adaptiveControllers.TryGetValue(sourceId, out controller))
+            {
+                return;
+            }
+
+            steppedDown = controller.RecordDrop(DateTimeOffset.UtcNow);
+            quality = controller.CurrentQuality;
+            maxDimension = controller.CurrentMaxDimension;
+        }
+
+        if (steppedDown)
+        {
+            RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension);
+        }
+    }
+
+    private void TickAdaptiveControllers()
+    {
+        List<(string SourceId, int Quality, int MaxDimension)>? toRestart = null;
+        lock (_adaptiveLock)
+        {
+            foreach (var (sourceId, controller) in _adaptiveControllers)
+            {
+                if (controller.Tick(DateTimeOffset.UtcNow))
+                {
+                    (toRestart ??= []).Add((sourceId, controller.CurrentQuality, controller.CurrentMaxDimension));
+                }
+            }
+        }
+
+        if (toRestart is null)
+        {
+            return;
+        }
+
+        foreach (var (sourceId, quality, maxDimension) in toRestart)
+        {
+            RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension);
+        }
+    }
+
+    /// <summary>Restarts a capture at auto-adjusted settings without touching the source's saved
+    /// Config — deliberately separate from <see cref="UpdateCaptureSettings"/>, which is the
+    /// explicit-user-edit path and persists to Config so it survives a resync. An automatic,
+    /// transient throttle shouldn't silently overwrite what the operator actually configured.</summary>
+    private void RestartCaptureWithAdaptiveSettings(string sourceId, int quality, int maxDimension)
+    {
+        if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+        {
+            return;
+        }
+
+        var targetWindow = existing.TargetWindow;
+        var fps = existing.TargetFps;
+        existing.Stop();
+        existing.Dispose();
+        StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
+
+        bool isThrottled;
+        lock (_adaptiveLock)
+        {
+            isThrottled = _adaptiveControllers.TryGetValue(sourceId, out var controller) && controller.IsThrottled;
+        }
+
+        AdaptiveSettingsChanged?.Invoke(sourceId, isThrottled, quality, maxDimension);
+        Log.Write(LogCategory.Media, "MasterHost",
+            $"Auto-adjusted capture {sourceId} to quality={quality} / {maxDimension}px ({(isThrottled ? "link can't sustain target settings" : "recovered toward target")})");
     }
 
     private void FlushDirtyTransforms()
@@ -166,6 +263,11 @@ public sealed class MasterHost : IAsyncDisposable
             StartAudioCapture(source.Id);
         }
 
+        lock (_adaptiveLock)
+        {
+            _adaptiveControllers[source.Id] = new AdaptiveEncodingController(defaultQuality, defaultMaxDimension, DateTimeOffset.UtcNow);
+        }
+
         Log.Write(LogCategory.Media, "MasterHost", $"Started capture '{name}' for source {source.Id}");
         return source;
     }
@@ -201,6 +303,19 @@ public sealed class MasterHost : IAsyncDisposable
             new { live = true, windowTitle, fps, maxDimension, quality, audio = includeAudio },
             ProtocolSerializer.Options);
         Project.UpdateConfig(sourceId, config);
+
+        // An explicit user edit always wins over any in-progress auto-throttling.
+        lock (_adaptiveLock)
+        {
+            if (_adaptiveControllers.TryGetValue(sourceId, out var controller))
+            {
+                controller.SetTarget(quality, maxDimension, DateTimeOffset.UtcNow);
+            }
+            else
+            {
+                _adaptiveControllers[sourceId] = new AdaptiveEncodingController(quality, maxDimension, DateTimeOffset.UtcNow);
+            }
+        }
 
         Log.Write(LogCategory.Media, "MasterHost", $"Restarted capture {sourceId} at {fps} FPS / {maxDimension}px / quality={quality} / audio={includeAudio}");
     }
@@ -247,6 +362,11 @@ public sealed class MasterHost : IAsyncDisposable
         }
 
         StopAudioCapture(sourceId);
+
+        lock (_adaptiveLock)
+        {
+            _adaptiveControllers.Remove(sourceId);
+        }
 
         Project.RemoveSource(sourceId);
     }
