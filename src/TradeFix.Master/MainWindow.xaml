@@ -9,7 +9,8 @@
         mc:Ignorable="d"
         Title="TradeFix Broadcast Control Center" Height="860" Width="1500"
         WindowStartupLocation="CenterScreen"
-        d:DataContext="{d:DesignInstance vm:MainViewModel}">
+        d:DataContext="{d:DesignInstance vm:MainViewModel}"
+        KeyDown="Window_KeyDown">
 
     <Window.Resources>
         <conv:ResourceKeyToBrushConverter x:Key="StatusBrush" />
@@ -178,8 +179,7 @@
                            MouseMove="CropHandle_MouseMove"
                            MouseLeftButtonUp="CropHandle_MouseLeftButtonUp" />
 
-                <Button Content="✕" Command="{Binding DataContext.RemoveSourceCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                        CommandParameter="{Binding}"
+                <Button Content="✕" Click="DeleteSourceButton_Click"
                         Width="20" Height="20" Padding="0" FontSize="11"
                         HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-10,-10,0"
                         Background="{StaticResource Brush.Danger}" BorderThickness="0"
@@ -442,7 +442,8 @@
                             </Border>
                         </StackPanel>
 
-                        <Button Content="Delete Source" Command="{Binding RemoveSelectedSourceCommand}" Margin="0,14,0,0" />
+                        <Button Content="Delete Source" Click="DeleteSelectedSourceButton_Click" Margin="0,14,0,0"
+                                ToolTip="Remove this source from the scene (Delete key also works)" />
 
                         <Separator Margin="0,16,0,16" Opacity="0.15" />
                         <TextBlock Style="{StaticResource Text.Secondary}" TextWrapping="Wrap">

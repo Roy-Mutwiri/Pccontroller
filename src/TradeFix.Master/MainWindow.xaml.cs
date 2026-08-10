@@ -199,4 +199,60 @@ public partial class MainWindow : Window
 
     private static double Clamp(double value, double min, double max) =>
         value < min ? min : value > max ? max : value;
+
+    private void DeleteSourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)sender).DataContext is not SourceItemViewModel item)
+        {
+            return;
+        }
+
+        if (ConfirmDelete(item.Name))
+        {
+            ViewModel.RemoveSourceCommand.Execute(item);
+        }
+    }
+
+    private void DeleteSelectedSourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedSource is not { } item)
+        {
+            return;
+        }
+
+        if (ConfirmDelete(item.Name))
+        {
+            ViewModel.RemoveSelectedSourceCommand.Execute(null);
+        }
+    }
+
+    /// <summary>Delete removes the selected source (with the same confirmation as the buttons);
+    /// Escape deselects. Guarded against a focused TextBox so typing/backspacing in the Properties
+    /// panel (e.g. editing a color hex or text source) never accidentally deletes the whole source.</summary>
+    private void Window_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.FocusedElement is TextBox)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Delete && ViewModel.SelectedSource is { } selected)
+        {
+            if (ConfirmDelete(selected.Name))
+            {
+                ViewModel.RemoveSelectedSourceCommand.Execute(null);
+            }
+
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            ViewModel.SelectSource(null);
+            e.Handled = true;
+        }
+    }
+
+    private bool ConfirmDelete(string name) =>
+        MessageBox.Show(this, $"Delete \"{name}\"? Every connected node stops showing it immediately.",
+            "TradeFix Broadcast", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
 }

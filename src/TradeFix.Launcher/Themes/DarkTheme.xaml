@@ -2,23 +2,25 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ============================================================
-         Palette — dark glass with cyan / violet neon accents.
-         Existing key NAMES are preserved (several are looked up by
-         string from C# converters — NodeViewModel, ConnectionStateToBrushConverter),
+         Palette — deep dark-blue glass, single-hue blue accent family
+         (no cyan/violet split — everything accent-colored lives in the
+         same blue hue for a cohesive "dark blue" identity). Existing key
+         NAMES are preserved (several are looked up by string from C#
+         converters — NodeViewModel, ConnectionStateToBrushConverter),
          only their values change.
          ============================================================ -->
-    <Color x:Key="Color.Accent">#FF2FD8FF</Color>
-    <Color x:Key="Color.Accent2">#FF8A6BFF</Color>
+    <Color x:Key="Color.Accent">#FF4C93FF</Color>
+    <Color x:Key="Color.Accent2">#FF1B3FA6</Color>
     <Color x:Key="Color.Success">#FF2FE6A6</Color>
     <Color x:Key="Color.Warning">#FFFFC857</Color>
     <Color x:Key="Color.Danger">#FFFF4D6D</Color>
 
-    <SolidColorBrush x:Key="Brush.Background" Color="#FF0A0C11" />
-    <SolidColorBrush x:Key="Brush.Surface" Color="#FF141822" />
-    <SolidColorBrush x:Key="Brush.SurfaceAlt" Color="#FF1C2230" />
-    <SolidColorBrush x:Key="Brush.Border" Color="#FF272E3D" />
-    <SolidColorBrush x:Key="Brush.TextPrimary" Color="#FFEAF2FC" />
-    <SolidColorBrush x:Key="Brush.TextSecondary" Color="#FF7B879B" />
+    <SolidColorBrush x:Key="Brush.Background" Color="#FF070B16" />
+    <SolidColorBrush x:Key="Brush.Surface" Color="#FF0E1526" />
+    <SolidColorBrush x:Key="Brush.SurfaceAlt" Color="#FF15203A" />
+    <SolidColorBrush x:Key="Brush.Border" Color="#FF223256" />
+    <SolidColorBrush x:Key="Brush.TextPrimary" Color="#FFEAF1FF" />
+    <SolidColorBrush x:Key="Brush.TextSecondary" Color="#FF7E8CB3" />
     <SolidColorBrush x:Key="Brush.Accent" Color="{StaticResource Color.Accent}" />
     <SolidColorBrush x:Key="Brush.Success" Color="{StaticResource Color.Success}" />
     <SolidColorBrush x:Key="Brush.Warning" Color="{StaticResource Color.Warning}" />
@@ -26,8 +28,8 @@
 
     <!-- New, additive keys -->
     <SolidColorBrush x:Key="Brush.Accent2" Color="{StaticResource Color.Accent2}" />
-    <SolidColorBrush x:Key="Brush.AccentSoft" Color="#3335D8FF" />
-    <SolidColorBrush x:Key="Brush.BorderGlow" Color="#5535D8FF" />
+    <SolidColorBrush x:Key="Brush.AccentSoft" Color="#334C93FF" />
+    <SolidColorBrush x:Key="Brush.BorderGlow" Color="#554C93FF" />
 
     <LinearGradientBrush x:Key="Brush.AccentGradient" StartPoint="0,0" EndPoint="1,1">
         <GradientStop Color="{StaticResource Color.Accent}" Offset="0" />
@@ -36,15 +38,15 @@
 
     <LinearGradientBrush x:Key="Brush.AccentLine" StartPoint="0,0" EndPoint="1,0">
         <GradientStop Color="{StaticResource Color.Accent}" Offset="0" />
-        <GradientStop Color="{StaticResource Color.Accent2}" Offset="0.6" />
-        <GradientStop Color="#008A6BFF" Offset="1" />
+        <GradientStop Color="{StaticResource Color.Accent2}" Offset="0.65" />
+        <GradientStop Color="#001B3FA6" Offset="1" />
     </LinearGradientBrush>
 
-    <!-- Window backdrop: deep diagonal gradient instead of flat black -->
+    <!-- Window backdrop: deep diagonal blue gradient instead of flat black -->
     <LinearGradientBrush x:Key="Brush.WindowBackdrop" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#FF0A0C11" Offset="0" />
-        <GradientStop Color="#FF11141C" Offset="0.55" />
-        <GradientStop Color="#FF0D1520" Offset="1" />
+        <GradientStop Color="#FF060912" Offset="0" />
+        <GradientStop Color="#FF0B1730" Offset="0.55" />
+        <GradientStop Color="#FF08122A" Offset="1" />
     </LinearGradientBrush>
 
     <!-- Faint HUD grid, laid as a full-bleed overlay behind hero window content -->
@@ -52,7 +54,7 @@
         <DrawingBrush.Drawing>
             <GeometryDrawing>
                 <GeometryDrawing.Pen>
-                    <Pen Brush="#FF2FD8FF" Thickness="1" />
+                    <Pen Brush="#FF4C93FF" Thickness="1" />
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
