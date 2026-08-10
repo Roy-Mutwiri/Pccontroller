@@ -102,6 +102,22 @@ document the limitation").
 - **No virtual camera driver exists.** If/when built, it will be a separate, explicitly
   user-consented install — not bundled silently.
 
+## Installer / Launcher (Phase 10, partial)
+
+- **No auto-start with Windows.** The Launcher has to be started manually (Start Menu/Desktop
+  shortcut) each time — there's no option yet to have it launch automatically on sign-in.
+- **Generic tray icon.** The Launcher's system tray icon is the default OS "application" icon, not
+  a custom TradeFix-branded one — no `.ico` asset exists in the project yet.
+- **"Switch Role" hasn't been exercised end-to-end.** Install, launch-with-a-saved-role, and
+  uninstall were all genuinely tested (see PROGRESS.md) — clicking "Switch this PC to X" in the
+  tray menu at runtime, which stops the current app and starts the other, has not been.
+- **Not yet installed on an actual PC2/PC3** — only tested on this dev machine so far.
+- **Tailscale detection is heuristic**, not authoritative: it checks for `tailscale.exe` on PATH,
+  the default Program Files install location, and one registry key. A non-default Tailscale
+  install location could be missed, in which case the installer would incorrectly prompt to
+  install it again — harmless (the prompt is just "here's the download page"), but not perfectly
+  accurate detection.
+
 ## Development environment note (for future maintainers)
 
 This project was scaffolded in a Windows sandbox with Windows Defender Application Control (WDAC)
@@ -124,3 +140,14 @@ target PC but only ever executes through a Microsoft-signed host). If PC2/PC3 tu
 similar WDAC policy, use the fxdep package; if not, the self-contained exe is simpler to deploy.
 Neither publish artifact has been smoke-tested directly on a machine without WDAC — only the
 fxdep build was verified to run in this session, via the signed-host workaround above.
+
+**Update (2026-08-10, installer testing):** a self-contained single-file `TradeFix.Launcher.exe`,
+built the same way as the Agent build above, *did* launch successfully in this same sandbox when
+started via the installer script — and it in turn successfully launched a self-contained
+`TradeFix.Master.exe` as a real child process. This directly contradicts the earlier observation
+above. Take neither result as a reliable predictor for any other machine: WDAC behavior evidently
+isn't perfectly consistent even within this one sandbox across sessions/builds, for reasons not
+fully understood. This is exactly why the installer itself is `.bat`/`.ps1`-based rather than a
+compiled installer.exe (see PROGRESS.md's installer section) — that part doesn't depend on this
+inconsistency at all, since script hosts are consistently trusted. Whether the *installed apps'*
+own exes launch cleanly on a given WDAC-restricted PC remains something to verify per-machine.

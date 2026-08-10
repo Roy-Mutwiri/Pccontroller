@@ -13,7 +13,8 @@
       general audio sources (mic, standalone audio files), mixing, and per-node device mapping are not
 - [ ] Phase 8 — Output integration (local render surface, OBS, virtual camera)
 - [ ] Phase 9 — Diagnostics + monitoring
-- [ ] Phase 10 — Polish, installer, auto-start
+- [~] Phase 10 — **Installer + role-picker Launcher are built** (see below); auto-start-with-Windows
+      and further polish are not
 
 ## Phase 1 detail (complete, 2026-08-10)
 
@@ -435,6 +436,77 @@ resulting tradeoff, since it's genuinely a product decision, not a bug to unilat
       link — the mechanism is proven correct in isolation (unit tests) but the end-to-end
       step-down-then-recover behavior over a real, varying internet connection hasn't been watched
       happen live yet.
+
+## Installer + role-picker Launcher (2026-08-10)
+
+User asked for a real installable product: one thing to install per PC, with the Master-vs-Render-
+Node choice made *in the software*, not by picking which of two separate .exe files to run.
+
+- [x] **`TradeFix.Launcher`** — a new small WPF app, the thing users actually install and run. No
+      persistent main window; lives as a system tray icon (`System.Windows.Forms.NotifyIcon` — WPF
+      has no built-in tray control, so this is the one place the app references WinForms, purely
+      for that). First run shows a two-card "What is this PC? Master / Render Node" picker; the
+      choice is saved and every subsequent launch goes straight to starting the right app.
+      "Switch this PC to Master/Render Node" is always available from the tray menu (with a
+      confirmation, since it stops whichever app is currently running first).
+- [x] `AppProcessSupervisor` — starts/stops the sibling `TradeFix.Master.exe`/`TradeFix.Agent.exe`
+      as genuinely independent OS processes (`UseShellExecute = true`), resolved relative to the
+      Launcher's own exe directory so it works regardless of install location. Deliberately
+      independent: closing the Launcher's tray icon must never take down an already-running
+      Master/Agent — only an explicit "Switch Role" does that, since that's the one case where
+      running both at once on one PC genuinely doesn't make sense.
+- [x] Path-resolution logic (`ResolveExePath`) covered by 6 real-filesystem tests (temp
+      directories, not mocked paths) — this is the one piece that has to exactly match whatever
+      layout the installer script actually produces, so it's pinned down precisely rather than
+      trusted by inspection. One test bug caught and fixed *before running it*: an early version of
+      the test cleanup computed a path that resolved to the system temp root and would have deleted
+      it recursively — rewritten to use a dedicated, exclusively-owned temp parent instead.
+- [x] **Installer**: PowerShell scripts (`installer/Install-TradeFixBroadcast.ps1` +
+      `Uninstall-TradeFixBroadcast.ps1`), each with a `.bat` double-click entry point — deliberately
+      *not* a compiled installer.exe (Inno Setup/WiX/etc.), because this exact project already hit
+      Windows Defender Application Control blocking unsigned compiled executables (see
+      KNOWN_LIMITATIONS.md's WDAC section) — `.bat`/`.ps1` run through the trusted, Microsoft-signed
+      `cmd.exe`/`powershell.exe` hosts instead, the same workaround already established for running
+      the Agent build in this environment. Installs per-user to
+      `%LocalAppData%\Programs\TradeFix Broadcast\` (no admin needed), creates Start Menu + Desktop
+      shortcuts, and registers a real "Apps & Features" entry (`HKCU:\...\Uninstall\TradeFixBroadcast`)
+      with a working uninstall command.
+- [x] Tailscale handling: **detect, don't bundle** — checked via `tailscale.exe` on PATH, the
+      default Program Files location, and the IPN registry key; if none found, opens Tailscale's
+      official download page and explains it's only needed for render nodes that aren't on the
+      Master's LAN. This was an explicit choice the user made between three options (bundle
+      silently / detect-and-prompt / ignore entirely) — bundling was passed over specifically to
+      avoid redistributing a third-party installer and the version-staleness that comes with it.
+- [x] `installer/Build-Distributable.ps1` — the developer-side counterpart: publishes self-
+      contained, single-file builds of all three apps into `publish\`, so the target PC needs no
+      separate .NET runtime install (the actual mechanism behind "downloads/installs all
+      requirements" — nothing needs downloading because it's embedded).
+- [x] **Genuinely tested end-to-end, not just by code review**: ran `Build-Distributable.ps1` for
+      real, then `Install-TradeFixBroadcast.ps1` for real, and confirmed — Master and Agent exes
+      present at the installed paths; Start Menu and Desktop `.lnk` shortcuts created; the Apps &
+      Features registry entry present with a correct `DisplayName`/`UninstallString`; the Launcher
+      process actually started and, using a saved role, actually launched `TradeFix.Master.exe` as
+      a real child process with a real, correctly-titled window
+      ("TradeFix Broadcast Control Center") — confirmed via `Get-Process`, not assumed. Then ran
+      `Uninstall-TradeFixBroadcast.ps1` for real and confirmed both processes stopped, both
+      shortcuts removed, the registry entry removed, and the install folder itself gone.
+- [x] **Found and fixed a real bug during that end-to-end test**: the uninstaller's deferred
+      self-delete (`rmdir` scheduled via a detached `cmd.exe` a couple seconds out, since a running
+      script can't delete its own containing folder synchronously) silently failed on the first
+      real run — the install folder was still there afterward. Root cause: the uninstall script's
+      own working directory was still *inside* the folder being deleted (inherited from wherever it
+      was launched from), and Windows won't delete a directory that's any live process's current
+      directory. Fixed by `Set-Location $env:TEMP` at the very start of the uninstall script;
+      re-ran the same real end-to-end test and confirmed the folder is now actually gone.
+      Also worth noting plainly: unlike the Agent's self-contained single-file exe earlier in this
+      project (which WDAC blocked from launching), the Launcher's self-contained exe launched fine
+      here — WDAC behavior isn't necessarily consistent across builds/machines, so this isn't a
+      guarantee it'll launch unblocked everywhere; the `.bat`/`.ps1` installer path was still the
+      right call for the installer *mechanism* itself regardless.
+- [ ] Not yet tested: an actual "Switch Role" click end-to-end (stopping one app and starting the
+      other via the tray menu), and a real install on PC2/PC3 rather than just this dev machine.
+      Also not built: auto-start-with-Windows (Phase 10 still lists this open), and the Launcher's
+      tray icon is the generic system application icon — no custom branded icon exists yet.
 
 ## Next up
 
