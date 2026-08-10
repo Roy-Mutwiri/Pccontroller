@@ -18,7 +18,7 @@
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibility" />
     </Window.Resources>
 
-    <Grid>
+    <Grid Background="{StaticResource Brush.WindowBackdrop}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />

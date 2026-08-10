@@ -4,7 +4,7 @@
         Title="Choose an app to capture" Height="480" Width="480"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.WindowBackdrop}">
-    <Grid>
+    <Grid Background="{StaticResource Brush.WindowBackdrop}">
         <Rectangle Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
         <Grid Margin="20">
             <Grid.RowDefinitions>

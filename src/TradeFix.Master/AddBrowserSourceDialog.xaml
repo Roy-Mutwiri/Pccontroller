@@ -4,7 +4,7 @@
         Title="Add Browser Source" Height="240" Width="480"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.WindowBackdrop}">
-    <Grid>
+    <Grid Background="{StaticResource Brush.WindowBackdrop}">
         <Rectangle Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
         <Grid Margin="20">
             <Grid.RowDefinitions>
