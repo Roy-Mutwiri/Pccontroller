@@ -287,6 +287,7 @@
                             <Button Content="+ Text" Command="{Binding AddTextSourceCommand}" Margin="0,0,8,0" />
                             <Button Content="+ Image" Command="{Binding AddImageSourceCommand}" Margin="0,0,8,0" />
                             <Button Content="+ App Capture" Command="{Binding AddCaptureSourceCommand}" Margin="0,0,8,0" />
+                            <Button Content="+ Browser" Command="{Binding AddBrowserSourceCommand}" Margin="0,0,8,0" />
                             <Button Content="+ Full Screen" Command="{Binding AddFullScreenCaptureSourceCommand}" />
                         </StackPanel>
                         <TextBlock Text="Program" Style="{StaticResource Text.Heading}" />

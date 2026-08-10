@@ -4,9 +4,10 @@
 - [x] Phase 1 — Master + Agent connection, pairing, auth, heartbeat, node dashboard
 - [x] Phase 2 — Project/Scene/Source state model + synchronization (real multi-scene, multi-source, add/remove/select, LOAD_SCENE resync-on-connect)
 - [~] Phase 3 — Render engine (multiple sources, live transform sync, live video frames; layer ordering/FPS counter/full compositing not yet built)
-- [~] Phase 4 — Sources: **Color/Background, Text, Image, and live app/screen Capture (video +
-      audio, per-window picker, crop, multiple independent captures) are built and working.**
-      Video file, Browser, and Camera sources are not yet built.
+- [~] Phase 4 — Sources: **Color/Background, Text, Image, live app/screen Capture (video + audio,
+      per-window picker, crop, multiple independent captures), and Browser (launches a dedicated,
+      capture-friendly Chrome/Edge window) are built and working.** Video file and Camera sources
+      are not yet built.
 - [x] Phase 5 — Asset synchronization (hashing, HTTP transfer, local cache) — built for Image sources; not yet extended to video files
 - [ ] Phase 6 — Scene system (create/switch/preview/program/transitions)
 - [~] Phase 7 — Audio engine: capture + relay + playback for live captures is built (see below);
@@ -507,6 +508,64 @@ Node choice made *in the software*, not by picking which of two separate .exe fi
       other via the tray menu), and a real install on PC2/PC3 rather than just this dev machine.
       Also not built: auto-start-with-Windows (Phase 10 still lists this open), and the Launcher's
       tray icon is the generic system application icon — no custom branded icon exists yet.
+
+## Browser source, and why "captured app frozen when covered" was a different bug (2026-08-10)
+
+The earlier PrintWindow-failure fix (see the "still lagging" section above) didn't fully resolve
+what the user was seeing — they clarified it specifically: a captured app stops updating once
+another window covers it. Root-caused properly instead of re-patching the same spot.
+
+- [x] **Real root cause**: this is Chromium's own window-occlusion-based background throttling —
+      Chrome/Edge/Electron apps deliberately stop rendering new frames once their window is fully
+      covered, to save CPU/GPU. `PrintWindow` succeeds and returns a genuinely valid frame; it's
+      just a stale one, because the app itself stopped drawing anything new. Different bug from the
+      earlier PrintWindow-return-value issue (which was about a technical capture failure) — this
+      is the captured app intentionally not producing new content, which no amount of fixing our
+      own PrintWindow call can override. This exact "browser source freezes when covered/minimized"
+      problem and its fix are well documented in the OBS/streaming community: launch Chromium with
+      flags that disable that throttling.
+- [x] **`Browser` source** (Phase 4's originally-planned "Browser" source type, previously listed
+      as not built) — a new "+ Browser" button takes a URL and launches a *dedicated* Chrome/Edge
+      window (`BrowserLauncher`, found via the Windows "App Paths" registry so it works regardless
+      of install location) in `--app=` mode with `--disable-backgrounding-occluded-windows
+      --disable-renderer-backgrounding --disable-background-timer-throttling`, using its own
+      persistent profile directory (so logins/sessions survive between launches) that's completely
+      separate from whatever browser the user already has open — necessary because Chromium only
+      reliably honors these flags for a genuinely new process/profile, not a new window on an
+      existing one. Once its window appears (found via a new `WindowEnumerator.FindWindowForProcess`,
+      matching by PID rather than fragile title text), it's registered as a capture source through
+      the exact same path as a picked App Capture — full reuse of video/audio capture, adaptive
+      quality, crop, everything already built.
+- [x] Can't retroactively fix a browser/Electron app the user already has open themselves (no way
+      to inject launch flags into a running process) — documented plainly in KNOWN_LIMITATIONS. The
+      Browser source is the fix for capturing web content specifically; a standalone Electron app
+      (not something launched as a Browser source) that freezes when covered is a limitation of
+      that app's own behavior, not something this software can override.
+- [x] **Real, rigorous test, not just "launches without throwing"**: `BrowserSourceTests` writes a
+      real local HTML page whose background color visibly cycles every 150ms, launches it through
+      `BrowserLauncher` for real, covers the real resulting window with a second real window
+      (reusing the SetWindowPos technique from the earlier minimized/occluded-window tests), then
+      captures several real frames through `ScreenCaptureService` and pixel-samples each one.
+      Asserts at least 2 distinct colors appear among the samples taken *while covered* — proof the
+      page kept rendering the whole time, which is the entire point of the anti-throttling flags.
+      This test would fail outright against a normal, unflagged browser launch. Also verifies
+      `BrowserLauncher.FindBrowserExecutable()` finds a real, existing Chrome or Edge install.
+      `TradeFix.Network.Tests` — 30/30 (2 new). Full solution: 67/67, run three times for stability.
+- [ ] **A real mistake made and corrected during this session, worth recording honestly**: while
+      cleaning up test-leftover Chrome processes afterward, killed several `chrome.exe` processes
+      based on a bad signal (recent start time) without checking `ParentProcessId`/command line
+      first — they turned out to be the *user's own already-open, legitimate Chrome window*
+      spawning its normal internal helper processes (GPU/utility/network services), not test
+      leftovers at all. Caught by actually inspecting `ParentProcessId` and command lines before
+      continuing, and confirmed via WMI that zero real leftover processes were tied to the test's
+      own dedicated profile directory — the test's own cleanup had already worked correctly the
+      whole time. Chrome transparently respawned the killed helper processes on its own (that
+      resilience is exactly why it uses a multi-process architecture) and the window kept
+      responding throughout, so real-world impact looks to have been minimal, but the user's
+      browser was genuinely, unnecessarily touched by a wrong assumption made under time pressure.
+      The general lesson applied going forward: verify process ownership (parent PID / command
+      line), not just timestamps, before killing anything that wasn't started by the current
+      session's own code.
 
 ## Next up
 

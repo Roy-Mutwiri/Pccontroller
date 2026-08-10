@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Text.Json;
@@ -243,16 +244,80 @@ public sealed class MasterHost : IAsyncDisposable
     /// <see cref="MediaHub"/> — a separate channel from the JSON control messages this same class
     /// broadcasts for the source's position/size (spec section 38). Each call starts an
     /// independent capture, so multiple different apps can be captured side by side.</summary>
-    public SourceDefinition AddCaptureSource(CapturableWindow? window)
+    public SourceDefinition AddCaptureSource(CapturableWindow? window) =>
+        AddCaptureSourceForWindow(window, window?.Title ?? "Screen Capture", browserUrl: null);
+
+    /// <summary>Launches a dedicated, capture-friendly Chrome/Edge window for <paramref name="url"/>
+    /// (see <see cref="BrowserLauncher"/> for why a dedicated launch, not the user's regular
+    /// browser) and adds it as a capture source once its window appears. Returns null — logging the
+    /// reason — if no Chromium browser is installed, the launch fails, or the window never shows up
+    /// within a few seconds.</summary>
+    public async Task<SourceDefinition?> AddBrowserCaptureSource(string url)
+    {
+        var browserExePath = BrowserLauncher.FindBrowserExecutable();
+        if (browserExePath is null)
+        {
+            Log.Write(LogCategory.Error, "MasterHost", "Could not add browser source: no Chrome or Edge installation found.");
+            return null;
+        }
+
+        var profileDirectory = Path.Combine(AppPaths.DataRoot("Master"), "BrowserProfiles", Guid.NewGuid().ToString("n"));
+        Process? process;
+        try
+        {
+            process = BrowserLauncher.LaunchCaptureFriendlyBrowser(browserExePath, url, profileDirectory);
+        }
+        catch (Exception ex)
+        {
+            Log.Write(LogCategory.Error, "MasterHost", $"Failed to launch browser for {url}", ex);
+            return null;
+        }
+
+        if (process is null)
+        {
+            Log.Write(LogCategory.Error, "MasterHost", $"Failed to launch browser for {url}");
+            return null;
+        }
+
+        CapturableWindow? window = null;
+        var deadline = DateTime.UtcNow.AddSeconds(8);
+        while (window is null && DateTime.UtcNow < deadline)
+        {
+            window = WindowEnumerator.FindWindowForProcess(process.Id);
+            if (window is null)
+            {
+                await Task.Delay(200);
+            }
+        }
+
+        if (window is null)
+        {
+            Log.Write(LogCategory.Error, "MasterHost", $"Browser launched for {url} but its window never appeared within 8s.");
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // best-effort — nothing more useful to do if this fails too
+            }
+
+            return null;
+        }
+
+        var name = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
+        return AddCaptureSourceForWindow(window, name, url);
+    }
+
+    private SourceDefinition AddCaptureSourceForWindow(CapturableWindow? window, string name, string? browserUrl)
     {
         const int defaultFps = 12;
         const int defaultMaxDimension = 3840;
         const int defaultQuality = 100;
         const bool defaultIncludeAudio = true;
 
-        var name = window?.Title ?? "Screen Capture";
         var config = JsonSerializer.SerializeToElement(
-            new { live = true, windowTitle = window?.Title, fps = defaultFps, maxDimension = defaultMaxDimension, quality = defaultQuality, audio = defaultIncludeAudio },
+            new { live = true, windowTitle = window?.Title, fps = defaultFps, maxDimension = defaultMaxDimension, quality = defaultQuality, audio = defaultIncludeAudio, browserUrl },
             ProtocolSerializer.Options);
         var source = Project.AddSource(SourceType.DisplayCapture, name, config,
             new Transform2D { X = 200, Y = 120, Width = 640, Height = 360 });

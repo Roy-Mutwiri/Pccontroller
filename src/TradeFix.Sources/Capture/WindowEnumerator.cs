@@ -58,6 +58,47 @@ public static class WindowEnumerator
         return results;
     }
 
+    /// <summary>Finds the first visible, titled top-level window owned by a specific process —
+    /// used to locate the window a just-launched process (e.g. a capture-friendly browser, see
+    /// <see cref="BrowserLauncher"/>) opened, without relying on fragile title matching.</summary>
+    public static CapturableWindow? FindWindowForProcess(int processId)
+    {
+        CapturableWindow? found = null;
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd) || IsIconic(hwnd))
+            {
+                return true;
+            }
+
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid != processId)
+            {
+                return true;
+            }
+
+            var length = GetWindowTextLength(hwnd);
+            if (length == 0)
+            {
+                return true;
+            }
+
+            var builder = new StringBuilder(length + 1);
+            GetWindowText(hwnd, builder, builder.Capacity);
+            var title = builder.ToString();
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return true;
+            }
+
+            found = new CapturableWindow(hwnd, title);
+            return false; // found it — stop enumerating
+        }, IntPtr.Zero);
+
+        return found;
+    }
+
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]

@@ -250,6 +250,29 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void AddFullScreenCaptureSource() => _host.AddCaptureSource(window: null);
 
+    /// <summary>Launches a dedicated, capture-friendly browser window for a URL instead of
+    /// requiring the operator to already have one open to pick — see MasterHost.AddBrowserCaptureSource
+    /// and BrowserLauncher for why: a regular already-open browser window pauses its own rendering
+    /// once covered by another window, which is what makes a captured browser look "frozen."</summary>
+    [RelayCommand]
+    private async Task AddBrowserSource()
+    {
+        var dialog = new AddBrowserSourceDialog();
+        if (dialog.ShowDialog() != true || dialog.Url is null)
+        {
+            return;
+        }
+
+        var source = await _host.AddBrowserCaptureSource(dialog.Url);
+        if (source is null)
+        {
+            System.Windows.MessageBox.Show(
+                $"Couldn't add a browser source for {dialog.Url}. Check the Logs panel for the reason " +
+                "(no Chrome/Edge found, or the window never appeared).",
+                "Add Browser Source", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
+    }
+
     [RelayCommand]
     private void RemoveSelectedSource()
     {

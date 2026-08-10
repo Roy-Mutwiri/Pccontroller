@@ -93,6 +93,28 @@ document the limitation").
   use case this could drift noticeably; for a trading-app-with-alert-sounds use case it's likely
   unnoticeable. True AV sync (spec section 17's shared-timeline approach) is future work.
 
+## Browser source
+
+- **Only fixes freezing for web content launched *through* this app.** A captured app that
+  pauses/throttles its own rendering when covered (common for Chromium-based apps generally, not
+  just browsers — some standalone Electron apps do this too) can only be fixed by controlling how
+  that specific process is launched. The Browser source solves this for websites, since we control
+  the launch; a standalone app the user already has open and picks via the regular window picker
+  can't be retroactively flagged this way — there's no way to inject launch arguments into an
+  already-running process.
+- **Requires Chrome or Edge to be installed**, found via the Windows "App Paths" registry. No
+  fallback if neither is present — the "+ Browser" button fails with a logged reason (surfaced to
+  the operator via a message box) rather than silently doing nothing.
+- **Each Browser source gets its own persistent, isolated browser profile** under
+  `%LocalAppData%\TradeFixBroadcast\Master\BrowserProfiles\` — logins/sessions for that specific
+  source survive between launches, but are not shared with the operator's regular browser (by
+  design, to guarantee the anti-throttling flags actually apply) or between different Browser
+  sources. Nothing currently cleans up a profile directory when its source is removed — they
+  accumulate on disk over time.
+- **The Properties/Add dialog only accepts typed http(s) URLs** — `MasterHost.AddBrowserCaptureSource`
+  itself doesn't restrict the scheme (the test suite uses `file://` URLs for a fully offline,
+  deterministic test page), that validation exists only in the UI layer for user-facing input.
+
 ## Output (Phase 8 — not started)
 
 - **No TikTok integration exists, and none is planned against undocumented APIs** (spec section
