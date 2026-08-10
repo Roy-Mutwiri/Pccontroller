@@ -159,6 +159,15 @@ public sealed class ScreenCaptureService : IDisposable
             return null; // window closed since it was picked — capture loop just skips this tick
         }
 
+        if (IsIconic(hwnd))
+        {
+            // Minimized windows have no valid backing surface for PrintWindow to render from —
+            // Windows itself can't produce real content here, only garbage/blank. Skipping the
+            // tick (rather than encoding and sending that blank frame) means nodes keep showing
+            // the last real frame instead of flashing to black the moment a window is minimized.
+            return null;
+        }
+
         var width = rect.Right - rect.Left;
         var height = rect.Bottom - rect.Top;
         if (width <= 0 || height <= 0)
@@ -170,13 +179,29 @@ public sealed class ScreenCaptureService : IDisposable
         using (var graphics = Graphics.FromImage(bitmap))
         {
             var destHdc = graphics.GetHdc();
+            bool printed;
             try
             {
-                PrintWindow(hwnd, destHdc, PwRenderFullContent);
+                printed = PrintWindow(hwnd, destHdc, PwRenderFullContent);
+                if (!printed)
+                {
+                    // PW_RENDERFULLCONTENT (the flag that's supposed to work correctly even when
+                    // the window is occluded/in the background) isn't supported by every window —
+                    // some older/non-composited windows only honor plain PrintWindow. Falling back
+                    // rather than silently sending whatever half-drawn bitmap PrintWindow left
+                    // behind (previously encoded and sent as-is — the bug behind "shows nothing
+                    // when another window is on top").
+                    printed = PrintWindow(hwnd, destHdc, 0);
+                }
             }
             finally
             {
                 graphics.ReleaseHdc(destHdc);
+            }
+
+            if (!printed)
+            {
+                return null; // both attempts failed — skip this tick rather than send a blank frame
             }
 
             DrawCursor(graphics, offsetX: -rect.Left, offsetY: -rect.Top, clampWidth: width, clampHeight: height);
@@ -224,11 +249,17 @@ public sealed class ScreenCaptureService : IDisposable
         }
     }
 
+    /// <summary>Returns <paramref name="source"/> itself (no copy) when it's already within
+    /// bounds — a full-frame pixel copy on every single tick was pure waste, and at the new 4K
+    /// default it was a real, measurable chunk of per-frame CPU cost on top of the JPEG encode
+    /// itself. Callers already wrap both the original bitmap and this return value in their own
+    /// <c>using</c>, so the same instance gets disposed twice in the no-scaling case — safe:
+    /// System.Drawing.Common's <c>Image.Dispose()</c> is a no-op after the first call.</summary>
     private Bitmap ScaleDownIfNeeded(Bitmap source)
     {
         if (source.Width <= _maxDimension && source.Height <= _maxDimension)
         {
-            return new Bitmap(source);
+            return source;
         }
 
         var scale = (double)_maxDimension / Math.Max(source.Width, source.Height);
@@ -289,4 +320,7 @@ public sealed class ScreenCaptureService : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hwnd);
 }

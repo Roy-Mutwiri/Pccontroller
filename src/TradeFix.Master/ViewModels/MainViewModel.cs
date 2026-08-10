@@ -19,6 +19,14 @@ public sealed partial class MainViewModel : ObservableObject
     private int _simulatedNodeCount;
     private int _sceneCount;
 
+    /// <summary>One <see cref="LiveFramePump"/> per capture source, so decoding each frame for
+    /// Master's own live preview happens off the UI thread instead of blocking the capture loop
+    /// (see that class's remarks). Guarded by <see cref="_framePumpsLock"/>: each active capture
+    /// runs its own background capture-loop thread, so this dictionary can be touched concurrently
+    /// from several threads at once, plus <see cref="RebuildFromProject"/> on the UI thread.</summary>
+    private readonly Dictionary<string, LiveFramePump> _framePumps = new();
+    private readonly object _framePumpsLock = new();
+
     public ObservableCollection<NodeViewModel> Nodes { get; } = [];
     public ObservableCollection<string> RecentLogLines { get; } = [];
     public ObservableCollection<SceneItemViewModel> Scenes { get; } = [];
@@ -58,11 +66,24 @@ public sealed partial class MainViewModel : ObservableObject
         host.Registry.NodeRemoved += OnNodeRemoved;
         host.LogSink.EntryAdded += OnLogEntryAdded;
         host.Project.Changed += () => _dispatcher.Invoke(RebuildFromProject);
-        host.LocalCaptureFrame += (sourceId, jpegBytes) => _dispatcher.Invoke(() =>
+        host.LocalCaptureFrame += (sourceId, jpegBytes) =>
         {
-            var item = ActiveSceneSources.FirstOrDefault(s => s.Id == sourceId);
-            item?.ApplyLiveFrame(jpegBytes);
-        });
+            LiveFramePump pump;
+            lock (_framePumpsLock)
+            {
+                if (!_framePumps.TryGetValue(sourceId, out pump!))
+                {
+                    pump = new LiveFramePump(_dispatcher, SourceItemViewModel.DecodeJpeg, decoded =>
+                    {
+                        var item = ActiveSceneSources.FirstOrDefault(s => s.Id == sourceId);
+                        item?.ApplyLiveFrame(decoded);
+                    });
+                    _framePumps[sourceId] = pump;
+                }
+            }
+
+            pump.Post(jpegBytes);
+        };
 
         foreach (var entry in host.LogSink.Snapshot().TakeLast(50))
         {
@@ -97,6 +118,16 @@ public sealed partial class MainViewModel : ObservableObject
             {
                 item.IsSelected = true;
                 SelectedSource = item;
+            }
+        }
+
+        var liveIds = ActiveSceneSources.Select(s => s.Id).ToHashSet();
+        lock (_framePumpsLock)
+        {
+            foreach (var staleId in _framePumps.Keys.Where(id => !liveIds.Contains(id)).ToList())
+            {
+                _framePumps[staleId].Dispose();
+                _framePumps.Remove(staleId);
             }
         }
     }

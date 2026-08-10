@@ -123,9 +123,14 @@ public sealed partial class SourceItemViewModel : ObservableObject
         Crop = new CropBox { Left = CropLeft, Top = CropTop, Right = CropRight, Bottom = CropBottom }
     };
 
-    /// <summary>Decodes a JPEG frame into a displayable, cross-thread-safe bitmap. Must be
-    /// called on the UI thread (WPF imaging types are thread-affine until frozen).</summary>
-    public void ApplyLiveFrame(byte[] jpegBytes)
+    /// <summary>Decodes a JPEG frame into a displayable, cross-thread-safe bitmap. Deliberately
+    /// safe to call from ANY thread: <see cref="BitmapCacheOption.OnLoad"/> plus
+    /// <see cref="System.Windows.Freezable.Freeze"/> produces an immutable bitmap that doesn't
+    /// need dispatcher affinity — decoding here off the UI thread, in
+    /// <see cref="TradeFix.Master.Services.LiveFramePump"/>, is what stops a large (quality/
+    /// resolution now maxed out on request) JPEG's decode cost from blocking Master's own capture
+    /// loop, which would otherwise delay broadcasting the next frame to every node.</summary>
+    public static BitmapSource DecodeJpeg(byte[] jpegBytes)
     {
         using var stream = new System.IO.MemoryStream(jpegBytes);
         var bitmap = new BitmapImage();
@@ -134,8 +139,12 @@ public sealed partial class SourceItemViewModel : ObservableObject
         bitmap.StreamSource = stream;
         bitmap.EndInit();
         bitmap.Freeze();
-        LiveFrame = bitmap;
+        return bitmap;
     }
+
+    /// <summary>Assigns an already-decoded frame. Must be called on the UI thread (this is the
+    /// cheap part — just a property assignment that raises PropertyChanged for data binding).</summary>
+    public void ApplyLiveFrame(BitmapSource decoded) => LiveFrame = decoded;
 
     partial void OnWidthChanged(double value)
     {

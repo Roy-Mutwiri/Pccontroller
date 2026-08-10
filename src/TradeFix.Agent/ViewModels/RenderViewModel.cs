@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using TradeFix.Protocol.Messages;
 using TradeFix.Shared.Models;
@@ -47,9 +48,11 @@ public sealed partial class RenderViewModel : ObservableObject
         }
     }
 
-    public void ApplyLiveFrame(string sourceId, byte[] jpegBytes)
+    /// <summary>Applies an already-decoded frame (decoding happens off the UI thread — see
+    /// <see cref="TradeFix.Agent.Services.LiveFramePump"/>). Must be called on the UI thread.</summary>
+    public void ApplyLiveFrame(string sourceId, BitmapSource decoded)
     {
         var existing = Sources.FirstOrDefault(s => s.Id == sourceId);
-        existing?.ApplyLiveFrame(jpegBytes);
+        existing?.ApplyLiveFrame(decoded);
     }
 }

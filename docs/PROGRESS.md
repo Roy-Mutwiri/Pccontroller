@@ -328,6 +328,57 @@ down."
       handling fixes that; the remaining lever in that case is dialing quality/max-dimension back
       down for that capture in the Properties panel.
 
+## Still lagging: render-side decode, and a real capture correctness bug (2026-08-10)
+
+User reported lag was still present after the MediaHub fix, plus a distinct correctness bug:
+capturing an app that's covered by another window or minimized showed nothing. Went deeper on
+both rather than assuming the previous fix was simply insufficient.
+
+- [x] **Second real lag source found**: both Master's own live preview and the Agent's render
+      window decoded every incoming JPEG *synchronously on the UI thread*, inside a **blocking**
+      `Dispatcher.Invoke` called directly from the thread that received the frame (the capture-loop
+      thread on Master, the network-receive thread on Agent). Decoding a large quality-100/4K JPEG
+      is real CPU work — this stalled the UI thread AND blocked that receiving thread from moving
+      on to the next frame, on both ends, independent of the network fix above.
+- [x] Added `LiveFramePump` (mirrored on both Master and Agent — these apps don't share a UI
+      library, matching how crop/render logic is already duplicated between them): one per capture
+      source, same single-slot latest-frame-wins queue pattern as `MediaHub`. Decoding now happens
+      off the UI thread; only the cheap final property assignment is marshaled onto the dispatcher,
+      and non-blockingly (`Dispatcher.InvokeAsync`, not `.Invoke`). A source that can't keep up
+      drops stale frames instead of decoding a growing backlog in order.
+- [x] **Separate, real correctness bug found and fixed**: `ScreenCaptureService.CaptureWindowAsJpeg`
+      never checked `PrintWindow`'s return value. A minimized window has no valid surface for
+      PrintWindow to render from — it fails, and the old code encoded and sent the leftover blank
+      bitmap anyway (JPEG has no alpha channel, so the transparent-black backing surface encodes as
+      solid black — "shows nothing"). Now: minimized windows are detected via `IsIconic` and the
+      tick is skipped entirely (node keeps showing the last real frame instead of flashing to
+      black); if `PrintWindow(..., PW_RENDERFULLCONTENT)` itself fails for any other window, it
+      retries with plain `PrintWindow(..., 0)` before giving up and skipping that tick too.
+- [x] 2 new tests reproduce the exact user-reported scenario for real: minimizing a real Notepad
+      window and asserting capture produces **no frame at all** while minimized (not a blank one),
+      then resumes correctly once restored; covering a real Notepad window with a second one and
+      asserting the captured frame is genuine, non-blank content (samples pixels across the decoded
+      image and fails if they're all pure black — precisely what the old bug produced). On this
+      machine `PrintWindow`/`PW_RENDERFULLCONTENT` handled the covered-but-not-minimized case
+      correctly even before the fix, so *minimizing* looks like the more likely match for what the
+      user actually hit — but the fallback-and-skip logic is real defensive coverage either way,
+      not fixing a hypothetical.
+- [x] Also removed a wasteful full-frame `Bitmap` copy that ran on every single tick even when no
+      scaling was needed (`ScaleDownIfNeeded` used to always allocate + copy, even when the frame
+      was already within bounds) — a real, measurable chunk of avoidable per-frame CPU cost at the
+      new 4K default, now just returns the same bitmap when no scaling is required.
+- [x] `TradeFix.Network.Tests` — 26/26 (2 new). Full solution: 48/48, run twice for stability.
+- [ ] Agent needs the republished build to get these fixes (already published and verified serving
+      at `http://100.116.30.51:8899/TradeFix.Agent-win-x64.zip`, Content-Length 66,657,665).
+      Not yet live-verified against PC2/PC3 whether lag is actually gone now, or whether the link's
+      raw bandwidth at quality-100/4K is simply the remaining bottleneck — if so, the lever is still
+      dialing quality/max-dimension down per-capture in the Properties panel.
+- [ ] Honest limitation not fixable from the capture side: if a captured app itself throttles or
+      pauses its own on-screen rendering while unfocused/backgrounded (common in browsers/Electron
+      apps to save resources), `PrintWindow` will faithfully capture whatever that app last
+      rendered — frozen-looking, not blank, but also not something screen-capture code can force an
+      app to render differently.
+
 ## Next up
 
 Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source
