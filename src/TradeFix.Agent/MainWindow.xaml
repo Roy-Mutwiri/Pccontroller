@@ -25,17 +25,30 @@
             <RowDefinition Height="180" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,0,1">
-            <TextBlock Text="TradeFix Render Agent" FontWeight="Bold" FontSize="16" Margin="16,10" />
+        <Rectangle Grid.RowSpan="3" Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
+
+        <Border Grid.Row="0" Background="{StaticResource Brush.Surface}">
+            <Grid>
+                <TextBlock Text="TradeFix Render Agent" FontWeight="Bold" FontSize="16" Margin="20,12" />
+                <Border Height="2" VerticalAlignment="Bottom" Background="{StaticResource Brush.AccentLine}">
+                    <Border.Effect>
+                        <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="12" ShadowDepth="0" Opacity="0.55" />
+                    </Border.Effect>
+                </Border>
+            </Grid>
         </Border>
 
         <StackPanel Grid.Row="1" Margin="20">
 
             <Border Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
-                    BorderThickness="1" CornerRadius="6" Padding="16">
+                    BorderThickness="1" CornerRadius="10" Padding="18">
+                <Border.Effect>
+                    <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="18" ShadowDepth="0" Opacity="0.12" />
+                </Border.Effect>
                 <StackPanel>
                     <DockPanel Margin="0,0,0,10">
                         <Ellipse Width="12" Height="12" Fill="{Binding State, Converter={StaticResource StateBrush}}"
+                                 Style="{StaticResource Ellipse.Pulse}"
                                  VerticalAlignment="Center" Margin="0,0,8,0" />
                         <TextBlock Text="{Binding State}" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" />
                     </DockPanel>
@@ -49,10 +62,10 @@
             <!-- First-time setup only: once paired, this Agent reconnects automatically on every
                  launch and this panel never shows again. -->
             <Border Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
-                    BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,14,0,0"
+                    BorderThickness="1" CornerRadius="10" Padding="18" Margin="0,14,0,0"
                     Visibility="{Binding KnowsMaster, Converter={StaticResource BoolToVisibility}, ConverterParameter=Invert}">
                 <StackPanel>
-                    <TextBlock Text="Connect to Master" Style="{StaticResource Text.Heading}" Margin="0,0,0,4" />
+                    <TextBlock Text="Connect to Master" Style="{StaticResource Text.Heading}" Foreground="{StaticResource Brush.Accent}" Margin="0,0,0,4" />
                     <TextBlock Text="Paste the connect code copied from the Master's &quot;Pair New Node&quot; panel:"
                                Style="{StaticResource Text.Secondary}" TextWrapping="Wrap" Margin="0,0,0,10" />
 
@@ -73,8 +86,11 @@
             <!-- Fallback: shown if the code parsed from the connect string above wasn't accepted
                  (e.g. it expired between copy and paste) — get a fresh one from Master and retype it here. -->
             <Border Background="{StaticResource Brush.SurfaceAlt}" BorderBrush="{StaticResource Brush.Accent}"
-                    BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,14,0,0"
+                    BorderThickness="1" CornerRadius="10" Padding="18" Margin="0,14,0,0"
                     Visibility="{Binding State, Converter={StaticResource EqualsToVisibility}, ConverterParameter=Pairing}">
+                <Border.Effect>
+                    <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="20" ShadowDepth="0" Opacity="0.35" />
+                </Border.Effect>
                 <StackPanel>
                     <TextBlock Text="Waiting for a pairing code. If this doesn't clear on its own within a few seconds, get a fresh code from the Master and enter it here:" TextWrapping="Wrap" />
                     <TextBox Text="{Binding PairingCodeInput, UpdateSourceTrigger=PropertyChanged}"
@@ -86,11 +102,14 @@
 
         </StackPanel>
 
-        <Border Grid.Row="2" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,1,0,0">
-            <DockPanel Margin="16,10">
-                <TextBlock Text="LOGS" Style="{StaticResource Text.Secondary}" DockPanel.Dock="Top" Margin="0,0,0,6" />
-                <ListBox ItemsSource="{Binding RecentLogLines}" FontFamily="Consolas" FontSize="11" />
-            </DockPanel>
+        <Border Grid.Row="2" Background="{StaticResource Brush.Surface}">
+            <Grid>
+                <Border Height="1" VerticalAlignment="Top" Background="{StaticResource Brush.AccentLine}" Opacity="0.5" />
+                <DockPanel Margin="20,10">
+                    <TextBlock Text="LOGS" Style="{StaticResource Text.Eyebrow}" DockPanel.Dock="Top" Margin="0,0,0,6" />
+                    <ListBox ItemsSource="{Binding RecentLogLines}" FontFamily="Consolas" FontSize="11" />
+                </DockPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>

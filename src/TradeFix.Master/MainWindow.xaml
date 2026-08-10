@@ -22,11 +22,15 @@
         <DataTemplate x:Key="NodeCardTemplate" DataType="{x:Type vm:NodeViewModel}">
             <Border Background="{StaticResource Brush.Surface}"
                     BorderBrush="{StaticResource Brush.Border}"
-                    BorderThickness="1" CornerRadius="6"
+                    BorderThickness="1" CornerRadius="10"
                     Padding="16" Margin="0,0,12,12" Width="230">
+                <Border.Effect>
+                    <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="18" ShadowDepth="0" Opacity="0.12" />
+                </Border.Effect>
                 <StackPanel>
                     <DockPanel>
                         <Ellipse Width="10" Height="10" Fill="{Binding StatusBrushKey, Converter={StaticResource StatusBrush}}"
+                                 Style="{StaticResource Ellipse.Pulse}"
                                  VerticalAlignment="Center" Margin="0,0,8,0" />
                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="15" TextTrimming="CharacterEllipsis" />
                     </DockPanel>
@@ -127,7 +131,7 @@
                                        Visibility="{Binding LiveFrame, Converter={StaticResource NullToVisibility}}" />
                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
                                             Visibility="{Binding LiveFrame, Converter={StaticResource NullToVisibility}, ConverterParameter=Invert}">
-                                    <Ellipse Width="12" Height="12" Fill="{StaticResource Brush.Danger}" HorizontalAlignment="Center" />
+                                    <Ellipse Width="12" Height="12" Fill="{StaticResource Brush.Danger}" Style="{StaticResource Ellipse.Pulse}" HorizontalAlignment="Center" />
                                     <TextBlock Text="Connecting…" Foreground="White" FontSize="12" FontWeight="Bold" Margin="0,6,0,0" />
                                 </StackPanel>
                                 <Border VerticalAlignment="Top" HorizontalAlignment="Left" Background="#CC000000" Padding="6,3" Margin="4">
@@ -198,13 +202,23 @@
             <RowDefinition Height="150" />
         </Grid.RowDefinitions>
 
+        <!-- Faint HUD grid, full-bleed behind everything -->
+        <Rectangle Grid.RowSpan="3" Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
+
         <!-- Top bar -->
-        <Border Grid.Row="0" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,0,1">
-            <DockPanel Margin="16,10">
-                <TextBlock Text="TradeFix Broadcast Control Center" FontWeight="Bold" FontSize="16" VerticalAlignment="Center" />
-                <TextBlock Text="{Binding ServerSummary}" Style="{StaticResource Text.Secondary}"
-                           VerticalAlignment="Center" Margin="16,0,0,0" DockPanel.Dock="Left" />
-            </DockPanel>
+        <Border Grid.Row="0" Background="{StaticResource Brush.Surface}">
+            <Grid>
+                <DockPanel Margin="20,12">
+                    <TextBlock Text="TradeFix Broadcast Control Center" FontWeight="Bold" FontSize="16" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding ServerSummary}" Style="{StaticResource Text.Secondary}"
+                               VerticalAlignment="Center" Margin="16,0,0,0" DockPanel.Dock="Left" />
+                </DockPanel>
+                <Border Height="2" VerticalAlignment="Bottom" Background="{StaticResource Brush.AccentLine}">
+                    <Border.Effect>
+                        <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="12" ShadowDepth="0" Opacity="0.55" />
+                    </Border.Effect>
+                </Border>
+            </Grid>
         </Border>
 
         <!-- Body -->
@@ -218,8 +232,7 @@
             <!-- Left nav: scenes -->
             <Border Grid.Column="0" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,1,0">
                 <DockPanel Margin="0,12">
-                    <TextBlock Text="SCENES" Padding="16,10" DockPanel.Dock="Top"
-                               Foreground="{StaticResource Brush.Accent}" FontWeight="SemiBold" FontSize="12" />
+                    <TextBlock Text="SCENES" Padding="16,10" DockPanel.Dock="Top" Style="{StaticResource Text.Eyebrow}" />
                     <Button Content="+ Add Scene" DockPanel.Dock="Bottom" Margin="12" Command="{Binding AddSceneCommand}" />
 
                     <ItemsControl ItemsSource="{Binding Scenes}">
@@ -261,8 +274,11 @@
                     </DockPanel>
 
                     <Border Background="{StaticResource Brush.SurfaceAlt}" BorderBrush="{StaticResource Brush.Accent}"
-                            BorderThickness="1" CornerRadius="4" Padding="14,10" Margin="0,14,0,0"
+                            BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,14,0,0"
                             Visibility="{Binding ActivePairingCode, Converter={StaticResource NullToVisibility}}">
+                        <Border.Effect>
+                            <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="20" ShadowDepth="0" Opacity="0.35" />
+                        </Border.Effect>
                         <StackPanel>
                             <TextBlock Text="Connect code — copy this and paste it into the TradeFix Render Agent on the other PC:" Style="{StaticResource Text.Secondary}" TextWrapping="Wrap" />
                             <DockPanel Margin="0,4,0,0">
@@ -275,7 +291,7 @@
                     </Border>
 
                     <Border Background="{StaticResource Brush.SurfaceAlt}" BorderBrush="{StaticResource Brush.Warning}"
-                            BorderThickness="1" CornerRadius="4" Padding="14,10" Margin="0,14,0,0"
+                            BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,14,0,0"
                             Visibility="{Binding StartupWarning, Converter={StaticResource NullToVisibility}}">
                         <TextBlock Text="{Binding StartupWarning}" TextWrapping="Wrap" Foreground="{StaticResource Brush.Warning}" />
                     </Border>
@@ -292,27 +308,51 @@
                         </StackPanel>
                         <TextBlock Text="Program" Style="{StaticResource Text.Heading}" />
                     </DockPanel>
-                    <Border Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
-                            BorderThickness="1" CornerRadius="6" Padding="1" HorizontalAlignment="Left">
-                        <Viewbox Width="720" Height="405" Stretch="Uniform">
-                            <Canvas x:Name="ProgramCanvas" Width="960" Height="540" Background="#FF0B0C10" ClipToBounds="True"
-                                    MouseLeftButtonDown="ProgramCanvas_MouseLeftButtonDown">
-                                <ItemsControl ItemsSource="{Binding ActiveSceneSources}" ItemTemplate="{StaticResource SourceItemTemplate}">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <Canvas />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemContainerStyle>
-                                        <Style TargetType="ContentPresenter">
-                                            <Setter Property="Canvas.Left" Value="{Binding X}" />
-                                            <Setter Property="Canvas.Top" Value="{Binding Y}" />
-                                        </Style>
-                                    </ItemsControl.ItemContainerStyle>
-                                </ItemsControl>
-                            </Canvas>
-                        </Viewbox>
-                    </Border>
+                    <Grid HorizontalAlignment="Left">
+                        <!-- Static decorative glow behind the frame — kept off the live canvas itself
+                             so the Effect's bitmap cache never has to re-rasterize per captured frame. -->
+                        <Border Background="{StaticResource Brush.Accent}" Opacity="0.12" CornerRadius="12" Margin="-8">
+                            <Border.Effect>
+                                <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="26" ShadowDepth="0" Opacity="0.5" />
+                            </Border.Effect>
+                        </Border>
+
+                        <Border Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
+                                BorderThickness="1" CornerRadius="8" Padding="1">
+                            <Viewbox Width="720" Height="405" Stretch="Uniform">
+                                <Canvas x:Name="ProgramCanvas" Width="960" Height="540" Background="#FF0B0C10" ClipToBounds="True"
+                                        MouseLeftButtonDown="ProgramCanvas_MouseLeftButtonDown">
+                                    <ItemsControl ItemsSource="{Binding ActiveSceneSources}" ItemTemplate="{StaticResource SourceItemTemplate}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <Canvas />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="Canvas.Left" Value="{Binding X}" />
+                                                <Setter Property="Canvas.Top" Value="{Binding Y}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
+                                    </ItemsControl>
+                                </Canvas>
+                            </Viewbox>
+                        </Border>
+
+                        <!-- HUD corner brackets -->
+                        <Path Data="M0,16 L0,0 L16,0" Stroke="{StaticResource Brush.Accent}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-3,-3,0,0" IsHitTestVisible="False" />
+                        <Path Data="M0,0 L16,0 L16,16" Stroke="{StaticResource Brush.Accent}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0" IsHitTestVisible="False" />
+                        <Path Data="M0,0 L0,16 L16,16" Stroke="{StaticResource Brush.Accent}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-3,0,0,-3" IsHitTestVisible="False" />
+                        <Path Data="M0,16 L16,16 L16,0" Stroke="{StaticResource Brush.Accent}" StrokeThickness="2"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-3,-3" IsHitTestVisible="False" />
+                    </Grid>
                     <TextBlock Text="Click a box to select it (Properties panel on the right). Drag to move; drag the white corner square to resize. For Image/App Capture sources, drag the accent-colored bars on the edges to crop. Every connected node updates live." Style="{StaticResource Text.Secondary}" Margin="0,8,0,0" TextWrapping="Wrap" />
 
                     <TextBlock Text="Nodes" Style="{StaticResource Text.Heading}" Margin="0,28,0,10" />
@@ -422,18 +462,21 @@
         </Grid>
 
         <!-- Log panel -->
-        <Border Grid.Row="2" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,1,0,0">
-            <DockPanel Margin="16,10">
-                <TextBlock Text="LOGS" Style="{StaticResource Text.Secondary}" DockPanel.Dock="Top" Margin="0,0,0,6" />
-                <ListBox ItemsSource="{Binding RecentLogLines}" FontFamily="Consolas" FontSize="11"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                    <ListBox.ItemContainerStyle>
-                        <Style TargetType="ListBoxItem">
-                            <Setter Property="Padding" Value="0,1" />
-                        </Style>
-                    </ListBox.ItemContainerStyle>
-                </ListBox>
-            </DockPanel>
+        <Border Grid.Row="2" Background="{StaticResource Brush.Surface}">
+            <Grid>
+                <Border Height="1" VerticalAlignment="Top" Background="{StaticResource Brush.AccentLine}" Opacity="0.5" />
+                <DockPanel Margin="16,10">
+                    <TextBlock Text="LOGS" Style="{StaticResource Text.Eyebrow}" DockPanel.Dock="Top" Margin="0,0,0,6" />
+                    <ListBox ItemsSource="{Binding RecentLogLines}" FontFamily="Consolas" FontSize="11"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                <Setter Property="Padding" Value="4,1" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </DockPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>

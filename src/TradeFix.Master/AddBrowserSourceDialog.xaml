@@ -1,31 +1,34 @@
 <Window x:Class="TradeFix.Master.AddBrowserSourceDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Add Browser Source" Height="220" Width="480"
+        Title="Add Browser Source" Height="240" Width="480"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource Brush.Background}">
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+        Background="{StaticResource Brush.WindowBackdrop}">
+    <Grid>
+        <Rectangle Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
+        <Grid Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Website URL" Style="{StaticResource Text.Secondary}" />
-        <TextBox x:Name="UrlBox" Grid.Row="1" Margin="0,4,0,10" Padding="6" Text="https://" />
+            <TextBlock Grid.Row="0" Text="Website URL" Style="{StaticResource Text.Eyebrow}" />
+            <TextBox x:Name="UrlBox" Grid.Row="1" Margin="0,6,0,12" Text="https://" />
 
-        <TextBlock Grid.Row="2" TextWrapping="Wrap" Style="{StaticResource Text.Secondary}">
-            Opens in a dedicated capture-friendly browser window (not your regular browser) so it
-            keeps updating live even when another window covers it — a normal browser window
-            deliberately pauses rendering when covered to save resources, which is what makes a
-            captured browser window "freeze."
-        </TextBlock>
+            <TextBlock Grid.Row="2" TextWrapping="Wrap" Style="{StaticResource Text.Secondary}">
+                Opens in a dedicated capture-friendly browser window (not your regular browser) so it
+                keeps updating live even when another window covers it — a normal browser window
+                deliberately pauses rendering when covered to save resources, which is what makes a
+                captured browser window "freeze."
+            </TextBlock>
 
-        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button Content="Cancel" Click="Cancel_Click" Margin="0,0,8,0" />
-            <Button Content="Add" Style="{StaticResource Button.Primary}" Click="Add_Click" />
-        </StackPanel>
+            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                <Button Content="Cancel" Click="Cancel_Click" Margin="0,0,8,0" />
+                <Button Content="Add" Style="{StaticResource Button.Primary}" Click="Add_Click" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

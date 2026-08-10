@@ -601,6 +601,47 @@ than just adding more flags speculatively.
       synthetic test is a faithful proxy for the mechanism, but "faithful proxy" isn't the same as
       "watched the actual reported scenario not happen."
 
+## Tried it with a real YouTube video, at the user's request (2026-08-10)
+
+Wrote a genuine, one-time verification against a real, live, currently-available YouTube video
+(Big Buck Bunny, `aqz-KE-bpKQ`, found via web search rather than guessed/recalled from memory —
+confirmed to actually exist and be embeddable before using it). Deliberately not added to the
+committed suite: depending on a specific external YouTube video staying available forever is
+fragile in a way `BrowserOcclusionVideoTests`' synthetic page isn't — this was purely to get real
+evidence for this conversation, using the scratchpad + a temporary copy in the test project,
+removed afterward.
+
+- [x] First attempt used a direct `/embed/` URL and failed immediately with YouTube's own "Error
+      153: Video player configuration error" — navigating straight to an `/embed/` URL outside an
+      actual `<iframe>` context isn't a supported use case. Caught by actually looking at the
+      captured frame image rather than assuming the pixel-diff failure meant the occlusion fix
+      hadn't worked. Switched to the regular `/watch?v=` URL, which works normally.
+- [x] With the correct URL, found a **second, real bug in the test's own setup**: it called
+      `SetForegroundWindow` on the covering window, which both raises Z-order (covers) AND steals
+      keyboard focus in one call — conflating two different signals (occlusion vs. focus loss) that
+      a real diagnosis needs to tell apart. Rewrote to cover the window in two isolated phases:
+      Z-order-to-top-without-activating (pure occlusion, browser keeps focus) via
+      `SetWindowPos(..., HWND_TOP, SWP_NOACTIVATE)`, then additionally stealing focus after — an
+      A/B comparison in one run.
+- [x] **Real, honest result — a genuine partial fix, not a full one**: the video was *not* fully
+      frozen (unlike the pre-fix behavior) in either phase, but its own progress counter advanced
+      only ~1 second across a ~6-second covered window — roughly 1/6th real speed — while the rest
+      of the page (layout, title, description, subscribe button) kept rendering completely
+      normally throughout. This points at YouTube's *own player* deliberately reducing decode/
+      render effort for video it believes isn't being actively watched — a mechanism separate from,
+      and evidently not fully covered by, `--disable-features=CalculateNativeWinOcclusion` (which
+      is confirmed working for generic compositor throttling via `BrowserOcclusionVideoTests`).
+      Whether the still-focused-but-covered phase and the covered-and-unfocused phase differ in a
+      consistent way wasn't conclusively determined — both showed partial, inconsistent motion
+      rather than a clean signal pointing at one specific trigger.
+- [x] Documented plainly in KNOWN_LIMITATIONS.md rather than claimed as fixed: YouTube specifically
+      still throttles video playback rate (not fully, but substantially) while covered, and this
+      may not be fixable via browser launch flags at all if it's YouTube's own deliberate,
+      undocumented player behavior. The Browser source's actual value for this project's likely
+      real use case (a trading dashboard, not video streaming) probably isn't affected the same
+      way, since general page rendering was never the problem — but that's an inference, not
+      something separately verified yet.
+
 ## Next up
 
 Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source

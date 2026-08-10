@@ -111,6 +111,19 @@ document the limitation").
   design, to guarantee the anti-throttling flags actually apply) or between different Browser
   sources. Nothing currently cleans up a profile directory when its source is removed — they
   accumulate on disk over time.
+- **YouTube specifically still throttles video *playback rate* while occluded, even with all
+  current flags** — verified with a real Big Buck Bunny video: covering the window didn't freeze
+  it completely (the earlier bug), but the video's own progress bar advanced only ~1 second across
+  a 6-second covered window (roughly 1/6th real speed), while the rest of the page (layout, title,
+  description) kept rendering normally the whole time. This points to YouTube's *own player*
+  reducing decode/render effort for a video it believes isn't being actively watched — separate
+  from, and not fixed by, `--disable-features=CalculateNativeWinOcclusion` (which fixes generic
+  Chromium compositor throttling, confirmed working via `BrowserOcclusionVideoTests`). If YouTube's
+  player checks something beyond simple window occlusion/focus to decide this, no browser launch
+  flag can override a website's own deliberate choice. Not yet tested whether other video-heavy
+  sites behave the same way, or whether primarily-non-video sites (e.g. a trading dashboard,
+  probably closer to this project's actual use case) are affected at all — general page rendering
+  clearly isn't.
 - **The Properties/Add dialog only accepts typed http(s) URLs** — `MasterHost.AddBrowserCaptureSource`
   itself doesn't restrict the scheme (the test suite uses `file://` URLs for a fully offline,
   deterministic test page), that validation exists only in the UI layer for user-facing input.

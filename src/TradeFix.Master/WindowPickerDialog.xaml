@@ -3,32 +3,37 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Choose an app to capture" Height="480" Width="480"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource Brush.Background}">
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+        Background="{StaticResource Brush.WindowBackdrop}">
+    <Grid>
+        <Rectangle Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
+        <Grid Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Pick the window to capture live — its content will stream to every connected node."
-                   TextWrapping="Wrap" Margin="0,0,0,12" />
+            <TextBlock Grid.Row="0" Text="Pick the window to capture live — its content will stream to every connected node."
+                       TextWrapping="Wrap" Margin="0,0,0,12" />
 
-        <ListBox x:Name="WindowList" Grid.Row="1" Background="{StaticResource Brush.Surface}"
-                 BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
-                 DisplayMemberPath="Title"
-                 MouseDoubleClick="WindowList_MouseDoubleClick">
-            <ListBox.ItemContainerStyle>
-                <Style TargetType="ListBoxItem">
-                    <Setter Property="Padding" Value="10,8" />
-                </Style>
-            </ListBox.ItemContainerStyle>
-        </ListBox>
+            <Border Grid.Row="1" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
+                    BorderThickness="1" CornerRadius="8" Padding="4">
+                <ListBox x:Name="WindowList" Background="Transparent" BorderThickness="0"
+                         DisplayMemberPath="Title"
+                         MouseDoubleClick="WindowList_MouseDoubleClick">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                            <Setter Property="Padding" Value="10,8" />
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+            </Border>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button Content="Refresh" Click="Refresh_Click" Margin="0,0,8,0" />
-            <Button Content="Cancel" Click="Cancel_Click" Margin="0,0,8,0" />
-            <Button Content="Capture Selected" Style="{StaticResource Button.Primary}" Click="Select_Click" />
-        </StackPanel>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                <Button Content="Refresh" Click="Refresh_Click" Margin="0,0,8,0" />
+                <Button Content="Cancel" Click="Cancel_Click" Margin="0,0,8,0" />
+                <Button Content="Capture Selected" Style="{StaticResource Button.Primary}" Click="Select_Click" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>
