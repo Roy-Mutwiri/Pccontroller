@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TradeFix.Network\TradeFix.Network.csproj" />
+    <ProjectReference Include="..\TradeFix.Shared\TradeFix.Shared.csproj" />
+    <ProjectReference Include="..\TradeFix.Protocol\TradeFix.Protocol.csproj" />
+    <ProjectReference Include="..\TradeFix.Common\TradeFix.Common.csproj" />
+    <ProjectReference Include="..\TradeFix.Rendering\TradeFix.Rendering.csproj" />
+    <ProjectReference Include="..\TradeFix.Sources\TradeFix.Sources.csproj" />
+    <ProjectReference Include="..\TradeFix.Audio\TradeFix.Audio.csproj" />
+    <ProjectReference Include="..\TradeFix.Assets\TradeFix.Assets.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+</Project>
