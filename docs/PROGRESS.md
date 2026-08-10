@@ -567,6 +567,40 @@ another window covers it. Root-caused properly instead of re-patching the same s
       line), not just timestamps, before killing anything that wasn't started by the current
       session's own code.
 
+## Browser source, round 2: video specifically still froze (2026-08-10)
+
+User reported the same class of issue again, more specifically: with a YouTube video playing,
+switching to another app made the video stop visually updating while its audio kept playing. The
+Browser source fix from earlier didn't fully cover this — worth understanding exactly why rather
+than just adding more flags speculatively.
+
+- [x] **The gap, precisely**: `BrowserSourceTests`' regression test used a JS `setInterval` timer
+      to change a page's background color, which only proves Chromium's *timer* throttling is
+      disabled (the `--disable-background-timer-throttling` flag). Video frame compositing is
+      scheduled through a completely different path — Chromium's own native-window-occlusion
+      detection, which independently suppresses compositor frame submission for an occluded
+      window regardless of timer throttling. That's exactly why audio (decode isn't gated by this)
+      kept playing while the picture froze: two different subsystems, only one of which the
+      original three flags addressed.
+- [x] Added `--disable-features=CalculateNativeWinOcclusion` to `BrowserLauncher` — disables
+      Chromium's native-window-occlusion detection entirely, so it never learns the window is
+      occluded in the first place and none of the downstream throttling paths that key off that
+      signal (including the video compositor one) ever engage.
+- [x] **New test that actually exercises the mechanism that was broken**, rather than re-proving
+      the one that already worked: `BrowserOcclusionVideoTests` uses `requestAnimationFrame`-driven
+      canvas rendering instead of a timer — the much closer proxy to how video frames actually get
+      scheduled — covers the real launched window with a real second window, captures real frames,
+      and asserts the rendered color keeps changing while covered. This is a genuinely different
+      code path being tested than the earlier `setInterval` test, not a duplicate.
+      `TradeFix.Network.Tests` — 31/31 (1 new). Full solution: 68/68, run twice for stability.
+      This time, confirmed no stray Chrome processes remained after the test run *before* declaring
+      it clean (checked `ParentProcessId`/command line via WMI first) — applying the lesson from
+      the mistake made during the previous round's testing.
+- [ ] Not yet confirmed this specific scenario (playing video, switch away, video keeps rendering)
+      against a real streaming/trading site rather than a synthetic canvas test page — the
+      synthetic test is a faithful proxy for the mechanism, but "faithful proxy" isn't the same as
+      "watched the actual reported scenario not happen."
+
 ## Next up
 
 Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source

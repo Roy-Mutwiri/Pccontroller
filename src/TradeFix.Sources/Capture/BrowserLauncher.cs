@@ -62,6 +62,17 @@ public static class BrowserLauncher
         startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
         startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
         startInfo.ArgumentList.Add("--disable-background-timer-throttling");
+        // The three flags above stop Chromium from pausing JS timers/the renderer process for an
+        // occluded window — enough for general page content (proven by BrowserSourceTests' color-
+        // cycling page, which uses a JS timer). Video playback specifically goes through a SEPARATE
+        // compositor frame-submission path that's suppressed based on Chromium's own native window-
+        // occlusion detection, independent of the flags above — this is why a playing YouTube video
+        // kept its audio (decode isn't gated by this) but stopped visually updating once occluded.
+        // This flag disables that native occlusion detection entirely, so Chromium never even
+        // learns the window is occluded and none of the downstream throttling — including the
+        // video compositor path — kicks in. See BrowserOcclusionVideoTests for the regression
+        // coverage this specific flag exists for.
+        startInfo.ArgumentList.Add("--disable-features=CalculateNativeWinOcclusion");
         startInfo.ArgumentList.Add("--new-window");
 
         return Process.Start(startInfo);
