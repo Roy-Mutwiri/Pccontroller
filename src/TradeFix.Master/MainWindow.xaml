@@ -384,8 +384,10 @@
                             <TextBlock Text="Capture settings" Style="{StaticResource Text.Secondary}" Margin="0,0,0,6" />
                             <TextBlock Text="Frame rate (FPS)" Style="{StaticResource Text.Secondary}" FontSize="10" />
                             <TextBox Text="{Binding SelectedSource.CaptureFps}" Margin="0,2,0,8" Padding="4" />
-                            <TextBlock Text="Max dimension (px) — lower = less bandwidth" Style="{StaticResource Text.Secondary}" FontSize="10" />
+                            <TextBlock Text="Max dimension (px) — 3840 (4K) by default so nothing gets downscaled; lower only to trade quality for bandwidth" Style="{StaticResource Text.Secondary}" FontSize="10" TextWrapping="Wrap" />
                             <TextBox Text="{Binding SelectedSource.CaptureMaxDimension}" Margin="0,2,0,8" Padding="4" />
+                            <TextBlock Text="JPEG quality (1-100) — 100 is the highest this format supports" Style="{StaticResource Text.Secondary}" FontSize="10" TextWrapping="Wrap" />
+                            <TextBox Text="{Binding SelectedSource.CaptureQuality}" Margin="0,2,0,8" Padding="4" />
                             <CheckBox Content="Include audio (desktop sound, not isolated to just this app)"
                                       IsChecked="{Binding SelectedSource.CaptureIncludeAudio}"
                                       Foreground="{StaticResource Brush.TextPrimary}" Margin="0,0,0,10" />

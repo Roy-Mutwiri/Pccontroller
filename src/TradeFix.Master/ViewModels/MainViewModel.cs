@@ -267,7 +267,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        _host.UpdateCaptureSettings(SelectedSource.Id, SelectedSource.CaptureFps, SelectedSource.CaptureMaxDimension, SelectedSource.CaptureIncludeAudio);
+        _host.UpdateCaptureSettings(SelectedSource.Id, SelectedSource.CaptureFps, SelectedSource.CaptureMaxDimension, SelectedSource.CaptureQuality, SelectedSource.CaptureIncludeAudio);
     }
 
     [RelayCommand]

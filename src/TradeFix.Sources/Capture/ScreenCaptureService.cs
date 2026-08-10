@@ -34,12 +34,14 @@ public sealed class ScreenCaptureService : IDisposable
     private readonly int _targetFps;
     private readonly int _maxDimension;
     private readonly IntPtr? _targetWindow;
+    private readonly long _quality;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
     public IntPtr? TargetWindow => _targetWindow;
     public int TargetFps => _targetFps;
     public int MaxDimension => _maxDimension;
+    public int Quality => (int)_quality;
 
     /// <summary>Fires once per captured frame with JPEG-encoded bytes. The handler is awaited
     /// before the next frame is captured, so a slow subscriber (e.g. a slow network broadcast)
@@ -48,11 +50,17 @@ public sealed class ScreenCaptureService : IDisposable
 
     /// <param name="targetWindow">If set, captures only this window (see <see cref="WindowEnumerator"/>
     /// for picking one). If null, captures the whole primary monitor.</param>
-    public ScreenCaptureService(int targetFps = 12, int maxDimension = 1280, IntPtr? targetWindow = null)
+    /// <param name="maxDimension">Defaults to 3840 (4K) — high enough that virtually no real
+    /// monitor or window gets downscaled at all; lower it only to trade quality for bandwidth on a
+    /// constrained link.</param>
+    /// <param name="quality">JPEG quality 1-100. Defaults to 100 (GDI+'s maximum) — the user
+    /// explicitly asked for the highest quality possible on every node, over bandwidth.</param>
+    public ScreenCaptureService(int targetFps = 12, int maxDimension = 3840, IntPtr? targetWindow = null, int quality = 100)
     {
         _targetFps = targetFps;
         _maxDimension = maxDimension;
         _targetWindow = targetWindow;
+        _quality = Math.Clamp(quality, 1, 100);
     }
 
     public bool IsRunning => _loop is { IsCompleted: false };
@@ -178,11 +186,11 @@ public sealed class ScreenCaptureService : IDisposable
         return EncodeJpeg(scaled);
     }
 
-    private static byte[] EncodeJpeg(Bitmap bitmap)
+    private byte[] EncodeJpeg(Bitmap bitmap)
     {
         var jpegEncoder = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
         using var encoderParams = new EncoderParameters(1);
-        encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, 70L);
+        encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, _quality);
         using var stream = new MemoryStream();
         bitmap.Save(stream, jpegEncoder, encoderParams);
         return stream.ToArray();

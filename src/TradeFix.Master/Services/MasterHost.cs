@@ -149,17 +149,18 @@ public sealed class MasterHost : IAsyncDisposable
     public SourceDefinition AddCaptureSource(CapturableWindow? window)
     {
         const int defaultFps = 12;
-        const int defaultMaxDimension = 1280;
+        const int defaultMaxDimension = 3840;
+        const int defaultQuality = 100;
         const bool defaultIncludeAudio = true;
 
         var name = window?.Title ?? "Screen Capture";
         var config = JsonSerializer.SerializeToElement(
-            new { live = true, windowTitle = window?.Title, fps = defaultFps, maxDimension = defaultMaxDimension, audio = defaultIncludeAudio },
+            new { live = true, windowTitle = window?.Title, fps = defaultFps, maxDimension = defaultMaxDimension, quality = defaultQuality, audio = defaultIncludeAudio },
             ProtocolSerializer.Options);
         var source = Project.AddSource(SourceType.DisplayCapture, name, config,
             new Transform2D { X = 200, Y = 120, Width = 640, Height = 360 });
 
-        StartCapture(source.Id, window?.Handle, defaultFps, defaultMaxDimension);
+        StartCapture(source.Id, window?.Handle, defaultFps, defaultMaxDimension, defaultQuality);
         if (defaultIncludeAudio)
         {
             StartAudioCapture(source.Id);
@@ -172,7 +173,7 @@ public sealed class MasterHost : IAsyncDisposable
     /// <summary>Restarts an existing capture at new FPS/quality/audio settings without changing
     /// which window it targets, and updates the source's Config so the new settings survive a
     /// resync (e.g. a node reconnecting) and show correctly if the Properties panel is reopened.</summary>
-    public void UpdateCaptureSettings(string sourceId, int fps, int maxDimension, bool includeAudio)
+    public void UpdateCaptureSettings(string sourceId, int fps, int maxDimension, int quality, bool includeAudio)
     {
         if (!_activeCaptures.TryGetValue(sourceId, out var existing))
         {
@@ -188,7 +189,7 @@ public sealed class MasterHost : IAsyncDisposable
         var targetWindow = existing.TargetWindow;
         existing.Stop();
         existing.Dispose();
-        StartCapture(sourceId, targetWindow, fps, maxDimension);
+        StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
 
         StopAudioCapture(sourceId);
         if (includeAudio)
@@ -197,16 +198,16 @@ public sealed class MasterHost : IAsyncDisposable
         }
 
         var config = JsonSerializer.SerializeToElement(
-            new { live = true, windowTitle, fps, maxDimension, audio = includeAudio },
+            new { live = true, windowTitle, fps, maxDimension, quality, audio = includeAudio },
             ProtocolSerializer.Options);
         Project.UpdateConfig(sourceId, config);
 
-        Log.Write(LogCategory.Media, "MasterHost", $"Restarted capture {sourceId} at {fps} FPS / {maxDimension}px / audio={includeAudio}");
+        Log.Write(LogCategory.Media, "MasterHost", $"Restarted capture {sourceId} at {fps} FPS / {maxDimension}px / quality={quality} / audio={includeAudio}");
     }
 
-    private void StartCapture(string sourceId, IntPtr? targetWindow, int fps, int maxDimension)
+    private void StartCapture(string sourceId, IntPtr? targetWindow, int fps, int maxDimension, int quality)
     {
-        var capture = new ScreenCaptureService(fps, maxDimension, targetWindow);
+        var capture = new ScreenCaptureService(fps, maxDimension, targetWindow, quality);
         capture.FrameCaptured += bytes =>
         {
             // Master already has these bytes in-process — no need to round-trip through its own

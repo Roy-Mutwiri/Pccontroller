@@ -9,6 +9,7 @@ namespace TradeFix.Network.Tests;
 /// window's actual size rather than the whole screen's — the concrete claim "captures this one
 /// app, not everything" that the feature exists to make true.
 /// </summary>
+[Collection("Notepad capture tests")]
 public sealed class WindowCaptureTests
 {
     [Fact]

@@ -32,7 +32,8 @@ public sealed partial class SourceItemViewModel : ObservableObject
     // Capture-only: editable after creation via the Properties panel (MasterHost restarts the
     // capture at the new settings rather than requiring delete + re-add).
     [ObservableProperty] private int _captureFps = 12;
-    [ObservableProperty] private int _captureMaxDimension = 1280;
+    [ObservableProperty] private int _captureMaxDimension = 3840;
+    [ObservableProperty] private int _captureQuality = 100;
     [ObservableProperty] private bool _captureIncludeAudio = true;
 
     public bool IsText => Type == SourceType.Text;
@@ -98,6 +99,11 @@ public sealed partial class SourceItemViewModel : ObservableObject
             if (source.Config.TryGetProperty("maxDimension", out var dimProp) && dimProp.ValueKind == JsonValueKind.Number)
             {
                 CaptureMaxDimension = dimProp.GetInt32();
+            }
+
+            if (source.Config.TryGetProperty("quality", out var qualityProp) && qualityProp.ValueKind == JsonValueKind.Number)
+            {
+                CaptureQuality = qualityProp.GetInt32();
             }
 
             if (source.Config.TryGetProperty("audio", out var audioProp) &&

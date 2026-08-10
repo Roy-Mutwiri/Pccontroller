@@ -259,6 +259,41 @@ explicitly once video was working. WASAPI loopback (desktop audio), not per-app 
       proven correct end-to-end on this machine; whether it sounds right over the actual
       PC1↔PC2/PC3 Tailscale link still needs a live test with the user.
 
+## Maximum capture quality (2026-08-10)
+
+The user asked explicitly for the highest possible quality/resolution on every node, "no quality
+should go down," over bandwidth concerns — a deliberate reversal of the earlier bandwidth-
+conscious defaults.
+
+- [x] JPEG encode quality was hardcoded at 70 — now a per-capture `quality` (1-100) setting,
+      threaded from `ScreenCaptureService` through `MasterHost` (`AddCaptureSource`,
+      `UpdateCaptureSettings`) to the Properties panel, defaulting to **100** (GDI+'s maximum).
+- [x] `maxDimension` default raised from 1280px to **3840px (4K)** — high enough that no real
+      monitor or window gets downscaled at all in practice; still lowerable per-capture in the
+      Properties panel for anyone who explicitly wants to trade quality for bandwidth on a
+      constrained link.
+- [x] 2 new tests, matching this project's "real measurement, not does-it-throw" standard:
+      captures the same static real Notepad window at quality 100 vs. quality 15 and asserts the
+      encoded frames are actually larger (proves the setting isn't silently ignored); captures the
+      real desktop at default settings and asserts the frame's decoded dimensions exactly match
+      the OS-reported native screen resolution (proves the new default doesn't downscale).
+      `TradeFix.Network.Tests` — 22/22. Full solution: 44/44.
+- [x] **Found and fixed a real test-isolation bug while adding these**: `WindowCaptureTests` and
+      the new quality test both launch a real `notepad.exe` and, in cleanup, kill *all* stray
+      "notepad" processes by name (a pre-existing belt-and-suspenders workaround for Process.Start
+      sometimes returning a launcher-stub handle). xUnit runs different test classes in parallel by
+      default, so running both suites together meant one test's cleanup could kill the other's
+      still-in-use window mid-capture — intermittent, non-deterministic failures that looked like
+      slowness at first (padding the timeout didn't fix it). Fixed by putting both classes in a
+      shared xUnit collection (`NotepadCaptureCollection`), which makes xUnit run them sequentially
+      relative to each other while still running in parallel with the rest of the suite.
+- [ ] Bandwidth impact is real and expected: quality 100 + up to 4K uncapped is meaningfully more
+      data per frame than the old quality-70/1280px defaults, on top of the existing note in
+      KNOWN_LIMITATIONS.md about Tailscale/WAN links. Not yet live-measured against PC2/PC3's
+      actual link — worth watching for choppiness if the connection can't sustain it, in which case
+      the per-capture Properties panel fields (still there) are the way to dial it back for that
+      specific source.
+
 ## Next up
 
 Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source

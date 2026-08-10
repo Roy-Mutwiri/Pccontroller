@@ -50,11 +50,15 @@ document the limitation").
   PROGRESS.md) — the more reliable choice for a first working version. It's CPU-bound (slower,
   higher-latency than WGC) and won't correctly capture some exclusive-fullscreen DirectX content.
   Revisit WGC once there's a way to test the interop live.
-- **Bandwidth not yet tuned for real-world links.** Frames are ~85KB JPEGs at a default 12 FPS —
-  roughly 1MB/s (~8 Mbps) sustained upload from Master to *each* subscribed node. That's fine on a
-  real LAN but may strain a home internet upload link when nodes connect over Tailscale/WAN (as in
-  this project's actual PC1↔PC2 setup). Frame rate and max dimension are editable per-capture in
-  the Properties panel (applying restarts that capture at the new settings).
+- **Bandwidth not yet tuned for real-world links — and deliberately less so now.** The user
+  explicitly asked for the highest possible quality/resolution on every node over bandwidth
+  concerns, so as of 2026-08-10 captures default to JPEG quality 100 (was 70) and up to 3840px/4K
+  uncapped (was 1280px) at a default 12 FPS. That's meaningfully more data per frame than before —
+  fine on a real LAN, but more likely to strain a constrained upload link when nodes connect over
+  Tailscale/WAN (as in this project's actual PC1↔PC2 setup) than the old, more conservative
+  defaults were. Frame rate, max dimension, and JPEG quality are all still editable per-capture in
+  the Properties panel (applying restarts that capture at the new settings) for anyone who
+  explicitly wants to trade quality back for bandwidth on a specific source.
 - **No reconnect/backpressure handling on the media WebSocket** beyond what's built — a dropped
   media subscription reconnects only when the next full LOAD_SCENE arrives (e.g. on Agent
   reconnect), not automatically mid-session. Acceptable for a first version; worth revisiting if
