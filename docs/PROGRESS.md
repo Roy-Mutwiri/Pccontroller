@@ -294,6 +294,40 @@ conscious defaults.
       the per-capture Properties panel fields (still there) are the way to dial it back for that
       specific source.
 
+## Fix real video lag from the quality bump (2026-08-10)
+
+The user reported lag right after the quality-100/4K change above — expected given the note left
+in that section, and it pointed at a real architectural weak spot rather than just "turn it back
+down."
+
+- [x] **Root cause**: `MediaHub.BroadcastFrameAsync` sent to every subscriber *sequentially and
+      awaited each socket send*, and `ScreenCaptureService`'s capture loop awaits the whole
+      `FrameCaptured` handler (by design — see its doc comment) before capturing the next frame.
+      With small quality-70/1280px frames this was rarely noticeable; with quality-100/4K frames
+      over a slower Tailscale/WAN link, one subscriber's slow send could stall capture for
+      everyone — Master's own preview and every other node included — and frames could pile up
+      behind it, falling further and further behind real time the longer it went on.
+- [x] Rewrote `MediaHub`: each subscriber now gets its own single-slot, latest-frame-wins queue
+      (`System.Threading.Channels`, `BoundedChannelFullMode.DropOldest`) and a dedicated background
+      sender. `BroadcastFrameAsync` now only hands frames off and returns immediately — it never
+      waits on a socket send, so a slow node can no longer block capture or any other node. A node
+      that falls behind simply skips old frames and always gets shown the most current one once its
+      link catches up, instead of accumulating an ever-growing backlog — the same drop-don't-queue
+      tradeoff OBS makes when its encoder falls behind. Applies to both video and audio, since
+      `AudioHub` is the same `MediaHub` class.
+- [x] 2 new deterministic regression tests (`MediaHubBackpressureTests`) using a controllable fake
+      `WebSocket` whose send can be held open on demand — real network timing can't be forced
+      reliably, so this proves the two concrete guarantees directly: `BroadcastFrameAsync` returns
+      in well under 500ms even while a subscriber's send is deliberately stuck; a subscriber that
+      falls behind receives only the latest frame, not a queue of stale ones. Both tests fail
+      against the old sequential-await implementation. `TradeFix.Network.Tests` — 24/24. Full
+      solution: 46/46 (run twice to confirm no flakiness from the change).
+- [ ] Not yet live-verified this actually resolves the user's reported lag over the real PC1↔PC2/PC3
+      link — the architectural bottleneck this fixes is proven and real, but if the link's raw
+      bandwidth simply can't sustain quality-100/4K frames at all, no amount of backpressure
+      handling fixes that; the remaining lever in that case is dialing quality/max-dimension back
+      down for that capture in the Properties panel.
+
 ## Next up
 
 Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source
