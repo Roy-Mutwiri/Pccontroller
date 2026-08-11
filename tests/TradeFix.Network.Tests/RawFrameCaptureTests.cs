@@ -36,7 +36,7 @@ public sealed class RawFrameCaptureTests
             capture.Stop();
         }
 
-        var (frame, w, h) = completion.Task.Result;
+        var (frame, w, h) = await completion.Task;
         Assert.True(w is > 0 and <= 1280, $"Width {w} outside expected bounds");
         Assert.True(h is > 0 and <= 1280, $"Height {h} outside expected bounds");
         Assert.Equal(w * 4 * h, frame.Length);

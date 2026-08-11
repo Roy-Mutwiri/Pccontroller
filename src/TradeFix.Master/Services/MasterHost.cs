@@ -447,12 +447,15 @@ public sealed class MasterHost : IAsyncDisposable
             // reset their decoders (no-op when there are none, e.g. a brand-new source).
             _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None);
 
-            var previewInterval = Math.Max(1, fps / 5);
+            var previewInterval = Math.Max(1, fps);
             var frameCounter = 0;
             capture.RawFrameCaptured += async (bgra, width, height) =>
             {
-                // Self-preview at ~5fps: there's no JPEG anywhere in this pipeline to reuse, and
-                // BMP-wrapping every raw frame for the local canvas would be pure memcpy waste.
+                // Self-preview at ~1fps: there's no JPEG anywhere in this pipeline to reuse, and
+                // each BMP wrap is a full uncompressed frame copy (~33MB at 4K) — at several per
+                // second that's hundreds of MB/s of pure allocation churn for what is only a
+                // monitoring thumbnail on the Master's own canvas. Remote nodes get full-rate
+                // H.264 regardless; this only throttles the local preview.
                 if (LocalCaptureFrame is not null && frameCounter++ % previewInterval == 0)
                 {
                     LocalCaptureFrame.Invoke(sourceId, BgraBmp.Encode(bgra, width, height));
