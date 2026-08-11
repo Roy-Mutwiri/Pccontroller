@@ -8,6 +8,7 @@
         xmlns:vm="clr-namespace:TradeFix.Master.ViewModels"
         mc:Ignorable="d"
         Title="TradeFix Broadcast Control Center" Height="860" Width="1500"
+        Icon="Assets/AppIcon.ico"
         WindowStartupLocation="CenterScreen"
         d:DataContext="{d:DesignInstance vm:MainViewModel}"
         KeyDown="Window_KeyDown">

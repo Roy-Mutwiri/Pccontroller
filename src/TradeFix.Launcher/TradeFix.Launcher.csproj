@@ -13,6 +13,11 @@
     <UseWindowsForms>true</UseWindowsForms>
     <!-- WinForms is only used for NotifyIcon (WPF has no built-in system tray control) — no
          WinForms UI is otherwise shown. -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\AppIcon.ico" />
+  </ItemGroup>
 
 </Project>

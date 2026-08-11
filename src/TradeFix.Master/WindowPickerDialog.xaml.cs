@@ -1,4 +1,5 @@
 using System.Windows;
+using TradeFix.Master.Services;
 using TradeFix.Sources.Capture;
 
 namespace TradeFix.Master;
@@ -13,6 +14,7 @@ public partial class WindowPickerDialog : Window
     public WindowPickerDialog()
     {
         InitializeComponent();
+        WindowChromeHelper.ApplyDarkTitleBar(this);
         LoadWindows();
     }
 

@@ -7,6 +7,7 @@
         xmlns:vm="clr-namespace:TradeFix.Agent.ViewModels"
         mc:Ignorable="d"
         Title="TradeFix Render Output" Height="608" Width="1080"
+        Icon="Assets/AppIcon.ico"
         WindowStartupLocation="CenterScreen"
         Background="Black"
         d:DataContext="{d:DesignInstance vm:RenderViewModel}">

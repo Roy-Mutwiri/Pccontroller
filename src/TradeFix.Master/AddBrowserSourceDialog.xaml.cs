@@ -1,4 +1,5 @@
 using System.Windows;
+using TradeFix.Master.Services;
 
 namespace TradeFix.Master;
 
@@ -12,6 +13,7 @@ public partial class AddBrowserSourceDialog : Window
     public AddBrowserSourceDialog()
     {
         InitializeComponent();
+        WindowChromeHelper.ApplyDarkTitleBar(this);
         UrlBox.Focus();
         UrlBox.CaretIndex = UrlBox.Text.Length;
     }

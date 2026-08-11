@@ -63,13 +63,34 @@ public partial class App : Application
     {
         _trayIcon = new NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Visible = true,
             Text = "TradeFix Broadcast"
         };
 
         _trayIcon.DoubleClick += (_, _) => BringRunningAppToFront();
         RefreshTrayMenu();
+    }
+
+    /// <summary>Pulls the icon straight from this exe's own native resources (embedded via the
+    /// project's ApplicationIcon) rather than shipping/loading a second copy of the .ico file —
+    /// same icon, one source of truth. Falls back to the generic system icon only if that
+    /// somehow fails, so the tray never ends up with no icon at all.</summary>
+    private static System.Drawing.Icon LoadAppIcon()
+    {
+        try
+        {
+            if (Environment.ProcessPath is { } exePath)
+            {
+                return System.Drawing.Icon.ExtractAssociatedIcon(exePath) ?? System.Drawing.SystemIcons.Application;
+            }
+        }
+        catch
+        {
+            // fall through to the generic icon — a missing tray icon is worse than a generic one
+        }
+
+        return System.Drawing.SystemIcons.Application;
     }
 
     private void RefreshTrayMenu()

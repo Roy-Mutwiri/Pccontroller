@@ -12,6 +12,7 @@ public partial class MainWindow : Window
     public MainWindow(AgentHost host)
     {
         InitializeComponent();
+        WindowChromeHelper.ApplyDarkTitleBar(this);
         DataContext = new MainViewModel(host, Dispatcher);
     }
 }
