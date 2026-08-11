@@ -37,6 +37,11 @@ downloaded from the internet (SmartScreen/App Control reacting to the file's Mar
 Either right-click the exe → Properties → check "Unblock" → OK and try again, or switch to
 `Install-TradeFixBroadcast.bat`, which unblocks everything it installs automatically.
 
+**App crashes or closes itself after opening?** Double-click `installer\Collect-Diagnostics.bat`
+on the affected PC — it gathers the Master/Agent/Launcher logs and any crash traces into one block
+of text, copies it straight to your clipboard, and saves a backup to your Desktop. Paste that
+wherever you're reporting the issue.
+
 ## Build (developers)
 
 Requires the .NET 8 SDK.
