@@ -46,6 +46,36 @@ foreach ($crashFile in @("tfagent-crash.txt", "tfmaster-crash.txt", "tflauncher-
     }
 }
 
+# AppDomain.UnhandledException/DispatcherUnhandledException only catch MANAGED .NET exceptions.
+# A crash below that level (a native access violation in a P/Invoke call, a graphics/audio driver
+# fault, etc.) kills the process instantly with nothing in our own logs or crash files, but
+# Windows itself records it here - "Application Error" / ".NET Runtime" entries in the Application
+# event log, with a faulting module name that pinpoints what actually crashed. Reading the event
+# log doesn't need elevation for a user's own session, but wrapped defensively anyway in case a
+# locked-down policy blocks it.
+$null = $sb.AppendLine("")
+$null = $sb.AppendLine("--- Application event log: Error/Critical events, last 2 hours ---")
+try {
+    $since = (Get-Date).AddHours(-2)
+    $events = Get-WinEvent -FilterHashtable @{ LogName = "Application"; Level = 1, 2; StartTime = $since } -ErrorAction Stop |
+        Sort-Object TimeCreated |
+        Select-Object -First 40
+
+    if ($events) {
+        foreach ($evt in $events) {
+            $null = $sb.AppendLine("")
+            $null = $sb.AppendLine("[$($evt.TimeCreated)] $($evt.ProviderName) (Id $($evt.Id))")
+            $null = $sb.AppendLine($evt.Message)
+        }
+    }
+    else {
+        $null = $sb.AppendLine("(no Error/Critical events in the last 2 hours)")
+    }
+}
+catch {
+    $null = $sb.AppendLine("(couldn't read the event log: $($_.Exception.Message))")
+}
+
 $text = $sb.ToString()
 
 $outFile = Join-Path ([Environment]::GetFolderPath("Desktop")) "TradeFixBroadcast-diagnostics.txt"
