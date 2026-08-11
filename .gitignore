@@ -193,6 +193,9 @@ dist/
 dist-*/
 /TradeFixBroadcast-*.zip
 
+# Runtime log written by Install-TradeFixBroadcast.bat/.ps1 on the machine it installs to
+installer/Install-Log.txt
+
 # Publish Web Output
 *.[Pp]ublish.xml
 *.azurePubxml

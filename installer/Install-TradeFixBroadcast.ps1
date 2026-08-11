@@ -30,6 +30,18 @@ $apps = @(
     @{ Name = "Launcher"; Source = Join-Path $publishRoot "TradeFix.Launcher-win-x64"; Exe = "TradeFix.Launcher.exe" }
 )
 
+# Everything below is transcript-logged to a file next to this script, in addition to the console.
+# The console window itself is not a reliable diagnostic surface: it can be closed by the user, by
+# a AV/EDR product silently terminating a "powershell -ExecutionPolicy Bypass -File ..." process
+# (a pattern real-time protection commonly flags, since it's also how droppers behave), or by
+# double-clicking the .bat from inside Explorer's zip-preview host rather than an extracted folder.
+# The log file survives all of those, so a failure that closes the window instantly can still be
+# diagnosed after the fact instead of just being "it closed, no idea why."
+$logPath = Join-Path $PSScriptRoot "Install-Log.txt"
+Start-Transcript -Path $logPath -Append | Out-Null
+
+try {
+
 Write-Host "TradeFix Broadcast  -  Setup" -ForegroundColor Cyan
 Write-Host ""
 
@@ -125,3 +137,14 @@ if ($tailscaleFound) {
 Write-Host ""
 Write-Host "Setup complete. Launching TradeFix Broadcast..." -ForegroundColor Cyan
 Start-Process -FilePath $launcherExe -WorkingDirectory (Split-Path -Parent $launcherExe)
+
+}
+catch {
+    Write-Host ""
+    Write-Host "Install failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Full details were saved to: $logPath" -ForegroundColor Yellow
+    throw
+}
+finally {
+    Stop-Transcript | Out-Null
+}
