@@ -1005,6 +1005,60 @@ solely in the Launcher's tray menu, which an operator may never discover.
       pieces (settings write, process start, Launcher reload) are individually tested, but the
       full choreography should be watched once on a real PC.
 
+## Pre-release hardening pass (2026-08-11/12)
+
+User: "we are about to push to usage to public — go through the whole code, make the UI world
+class, run deep tests, make sure no lags, make sure it doesn't crash." Ran a six-agent parallel
+audit (Master crash risks, Agent/network crash risks, pipeline lag, Master UI, satellite-app UI,
+test gaps) over the whole codebase — ~50 defensible findings — then fixed everything in the
+crash/stall/data-loss/UX-bug classes and the highest-value polish. Highlights (the commit
+messages carry the full accounting):
+
+- [x] **Thread-safety**: MasterHost's capture/encoder/audio lifecycle was mutated from four
+      different threads with no lock (corruption/doubled-ffmpeg risk precisely under network
+      pressure) — now serialized under one lock. Agent's subscription dictionary likewise.
+- [x] **The 3-second stall**: every adaptive step-down in H.264 mode disposed the encoder from
+      inside its own stdout pump's call chain — Dispose waited on the very task calling it,
+      burning its full 3s timeout as dead air, on every step-down. Restarts now hop to the
+      thread pool AND Dispose detects re-entry (AsyncLocal).
+- [x] **Video that never came back**: an Agent media subscription that dropped (network blip,
+      Master restart) stayed dead until the next scene change. Both media and audio
+      subscriptions now reconnect with backoff for as long as the source exists.
+- [x] **Byte-budget media queues**: message-count queues replaced with a per-subscriber BYTE
+      budget (384KB video ≈ 0.4s max standing latency at 8Mbps) — bounds backlog latency,
+      preserves H.264 burst absorption, degrades to latest-wins for oversized JPEG fallback
+      frames automatically, and restart markers are neverDrop control messages congestion cannot
+      evict (a lost marker used to strand a node's decoder at a stale resolution permanently).
+- [x] **One-click crash fixes**: Add Capture Source on a PC with no audio device; Copy connect
+      code while another app holds the clipboard; adding a locked/vanished image file; a corrupt
+      image on the render node (converter exceptions crash WPF); handshake failing when
+      LOAD_SCENE beat AUTH_RESPONSE on a fast LAN (silently discarded valid credentials).
+- [x] **One-click data loss**: Apply with an Image source selected replaced its
+      {assetHash,fileName} config with {color} — image permanently destroyed on every node.
+- [x] **UI correctness**: node cards never updated status after creation (computed properties
+      raised no change notification — a dead node kept glowing green); background→UI marshaling
+      switched to non-blocking InvokeAsync everywhere (blocking Invoke from receive loops could
+      mutually deadlock with encoder teardown); OnExit no longer races its own teardown.
+- [x] **Polish**: entrance animations (windows fade in; node cards and toasts slide in), node
+      online/offline toast notifications, live "14 fps · 3.2 Mbps" readout on the Agent status
+      card, keyboard focus rings, Enter/Escape wired in dialogs, picker button disabled without
+      a selection, auto-scrolling log panels, unified title typography across all four apps,
+      fixed the sidebar layout bug, min window sizes, theme-token letterboxes, Button.Primary
+      contrast, conditional status-dot pulse (a dead red dot no longer "breathes"), scene-row
+      hover states, bigger delete hit targets.
+- [x] **Pipeline efficiency**: absolute-schedule capture pacing (was quietly delivering 10-16%
+      below the configured FPS while telling x264 the nominal rate); audio pump drains backlog
+      per tick (could previously fall behind permanently); WaveOut latency 300→150ms plus a
+      >1s-behind drift reset; cached JPEG encoder lookup; decoder kills its ffmpeg child if the
+      frame pump exits; log sinks isolated.
+- [x] **New tests** (106/106 passing): MediaHub byte-budget semantics incl. marker-survival-
+      under-congestion and oversized-frame latest-wins; AudioChunkFraming wire-contract round
+      trips and truncation rejection; encoder repeated-failure → Failed-exactly-once give-up.
+- [ ] Known-remaining (documented, deliberate): Agent BMP display path still allocates a full
+      uncompressed frame per decoded frame (LOH churn; a WriteableBitmap rework is the fix);
+      stock MessageBoxes instead of themed dialogs; reconnection + full relay-through-
+      MasterServer integration tests still to be written (the pieces are covered separately).
+
 ## Next up
 
 Live-verify the H.264 pipeline across real PC2/PC3 links (quality holding at high settings under

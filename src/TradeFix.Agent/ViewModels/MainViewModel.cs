@@ -47,6 +47,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     public bool NeedsPairingCode => State == NodeConnectionState.Pairing;
 
+    /// <summary>The status dot pulses only while the connection is alive or actively trying —
+    /// a dead Offline/Error indicator holds still (a breathing red dot reads as "working").</summary>
+    public bool StatePulses => State is not (NodeConnectionState.Offline or NodeConnectionState.Error);
+
     public MainViewModel(AgentHost host, Dispatcher dispatcher)
     {
         _host = host;
@@ -174,6 +178,7 @@ public sealed partial class MainViewModel : ObservableObject
 
             OnPropertyChanged(nameof(NeedsPairingCode));
             OnPropertyChanged(nameof(KnowsMaster));
+            OnPropertyChanged(nameof(StatePulses));
 
             if (state == NodeConnectionState.Pairing && _pendingParsedPairingCode is not null)
             {

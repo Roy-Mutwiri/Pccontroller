@@ -13,6 +13,16 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         WindowChromeHelper.ApplyDarkTitleBar(this);
-        DataContext = new MainViewModel(host, Dispatcher);
+        var viewModel = new MainViewModel(host, Dispatcher);
+        DataContext = viewModel;
+
+        // Keep the log panel pinned to the newest entry (same rationale as Master's MainWindow).
+        viewModel.RecentLogLines.CollectionChanged += (_, _) =>
+        {
+            if (LogList.Items.Count > 0)
+            {
+                LogList.ScrollIntoView(LogList.Items[LogList.Items.Count - 1]);
+            }
+        };
     }
 }

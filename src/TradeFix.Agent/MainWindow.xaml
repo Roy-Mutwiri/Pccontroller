@@ -7,7 +7,7 @@
         xmlns:conv="clr-namespace:TradeFix.Agent.Converters"
         xmlns:vm="clr-namespace:TradeFix.Agent.ViewModels"
         mc:Ignorable="d"
-        Title="TradeFix Render Agent" Height="640" Width="520"
+        Title="TradeFix Render Agent" Height="640" Width="520" MinHeight="560" MinWidth="460"
         Icon="Assets/AppIcon.ico"
         WindowStartupLocation="Manual"
         d:DataContext="{d:DesignInstance vm:MainViewModel}">
@@ -30,7 +30,7 @@
 
         <Border Grid.Row="0" Background="{StaticResource Brush.Surface}">
             <Grid>
-                <TextBlock Text="TradeFix Render Agent" FontWeight="Bold" FontSize="16" Margin="20,12" />
+                <TextBlock Text="TradeFix Render Agent" Style="{StaticResource Text.Title}" Margin="20,12" />
                 <Border Height="2" VerticalAlignment="Bottom" Background="{StaticResource Brush.AccentLine}">
                     <Border.Effect>
                         <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="12" ShadowDepth="0" Opacity="0.55" />
@@ -48,9 +48,36 @@
                 </Border.Effect>
                 <StackPanel>
                     <DockPanel Margin="0,0,0,10">
+                        <!-- The pulse is a liveness signal — a dead Offline/Error dot sits still
+                             instead of breathing like a healthy live indicator. The exit action
+                             starts a short to-1 animation, which takes over the property from
+                             the infinite pulse (WPF last-writer-wins on animated properties). -->
                         <Ellipse Width="12" Height="12" Fill="{Binding State, Converter={StaticResource StateBrush}}"
-                                 Style="{StaticResource Ellipse.Pulse}"
-                                 VerticalAlignment="Center" Margin="0,0,8,0" />
+                                 VerticalAlignment="Center" Margin="0,0,8,0">
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding StatePulses}" Value="True">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity" From="1" To="0.35"
+                                                                          Duration="0:0:1" AutoReverse="True" RepeatBehavior="Forever" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.15" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
                         <TextBlock Text="{Binding State}" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" />
                     </DockPanel>
                     <TextBlock Text="{Binding ConnectedMasterSummary, StringFormat='Master: {0}'}" Style="{StaticResource Text.Secondary}"
@@ -118,7 +145,7 @@
                 <Border Height="1" VerticalAlignment="Top" Background="{StaticResource Brush.AccentLine}" Opacity="0.5" />
                 <DockPanel Margin="20,10">
                     <TextBlock Text="LOGS" Style="{StaticResource Text.Eyebrow}" DockPanel.Dock="Top" Margin="0,0,0,6" />
-                    <ListBox ItemsSource="{Binding RecentLogLines}" FontFamily="Consolas" FontSize="11" />
+                    <ListBox x:Name="LogList" ItemsSource="{Binding RecentLogLines}" FontFamily="Consolas" FontSize="11" />
                 </DockPanel>
             </Grid>
         </Border>

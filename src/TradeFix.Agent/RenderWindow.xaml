@@ -26,12 +26,12 @@
                                FontSize="22" TextWrapping="Wrap" TextAlignment="Center"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Margin="6" />
                 </Border>
-                <Border Background="#FF1D2027" ClipToBounds="True" Visibility="{Binding IsImage, Converter={StaticResource BoolToVisibility}}">
+                <Border Background="{StaticResource Brush.Background}" ClipToBounds="True" Visibility="{Binding IsImage, Converter={StaticResource BoolToVisibility}}">
                     <Image Source="{Binding ImagePath, Converter={StaticResource FilePathToImageSource}}" Stretch="Fill"
                            Width="{Binding ContentWidth}" Height="{Binding ContentHeight}" Margin="{Binding ContentMargin}"
                            HorizontalAlignment="Left" VerticalAlignment="Top" />
                 </Border>
-                <Border Background="#FF1D2027" ClipToBounds="True" Visibility="{Binding IsLive, Converter={StaticResource BoolToVisibility}}">
+                <Border Background="{StaticResource Brush.Background}" ClipToBounds="True" Visibility="{Binding IsLive, Converter={StaticResource BoolToVisibility}}">
                     <Image Source="{Binding LiveFrame}" Stretch="Fill"
                            Width="{Binding ContentWidth}" Height="{Binding ContentHeight}" Margin="{Binding ContentMargin}"
                            HorizontalAlignment="Left" VerticalAlignment="Top" />

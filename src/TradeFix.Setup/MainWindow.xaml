@@ -18,7 +18,7 @@
             <TextBlock x:Name="SubtitleText" Grid.Row="1" Margin="0,6,0,16" Style="{StaticResource Text.Secondary}" TextWrapping="Wrap" />
 
             <Border Grid.Row="2" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
-                    BorderThickness="1" CornerRadius="8" Padding="2">
+                    BorderThickness="1" CornerRadius="10" Padding="2">
                 <ListBox x:Name="LogList" Background="Transparent" BorderThickness="0"
                          FontFamily="Consolas" FontSize="12" Padding="6" />
             </Border>
