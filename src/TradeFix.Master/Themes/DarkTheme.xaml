@@ -126,7 +126,7 @@
         <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
         <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="16,8" />
+        <Setter Property="Padding" Value="18,10" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
@@ -135,7 +135,11 @@
                     <Border x:Name="Bg" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="7">
+                            CornerRadius="10"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="PressScale" ScaleX="1" ScaleY="1" />
+                        </Border.RenderTransform>
                         <Border.Effect>
                             <DropShadowEffect x:Name="Glow" Color="{StaticResource Color.Accent}"
                                                BlurRadius="0" ShadowDepth="0" Opacity="0" />
@@ -164,6 +168,22 @@
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Bg" Property="Background" Value="{StaticResource Brush.Accent}" />
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="0.965" Duration="0:0:0.08" />
+                                        <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="0.965" Duration="0:0:0.08" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12" />
+                                        <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.35" />
@@ -197,7 +217,7 @@
                     <Border x:Name="Bd" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="5">
+                            CornerRadius="8">
                         <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>
@@ -222,11 +242,11 @@
             <Setter.Value>
                 <ControlTemplate TargetType="CheckBox">
                     <DockPanel Background="Transparent">
-                        <Border x:Name="Box" Width="16" Height="16" CornerRadius="4"
+                        <Border x:Name="Box" Width="18" Height="18" CornerRadius="6"
                                 Background="{StaticResource Brush.SurfaceAlt}"
                                 BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
                                 VerticalAlignment="Center" Margin="0,0,8,0">
-                            <Path x:Name="Check" Data="M3,8 L6.5,11.5 L13,3.5" Stroke="{StaticResource Brush.Background}"
+                            <Path x:Name="Check" Data="M3,9 L7.3,13 L15,4" Stroke="{StaticResource Brush.Background}"
                                   StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                   Visibility="Collapsed" />
                         </Border>
@@ -325,7 +345,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ListBoxItem">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="4"
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6"
                             Padding="{TemplateBinding Padding}">
                         <ContentPresenter />
                     </Border>
