@@ -10,11 +10,20 @@ document the limitation").
 - **FPS and latency metrics are placeholder zeros.** They become real once Phase 3 (rendering
   loop) and real round-trip timing exist. Reporting a fabricated number would be worse than
   reporting an honest zero.
-- **GPU utilization is best-effort.** It reads the Windows "GPU Engine" performance counter
-  category (`engtype_3D` instances, summed). This is a real OS-provided signal, not fabricated,
-  but: it can read 0 on systems where the GPU driver doesn't populate that counter category, it
-  only captures 3D-engine utilization (not video-decode/encode engines), and it's a system-wide
-  aggregate, not process-attributed. Accept it as directionally useful, not authoritative.
+- **GPU utilization always reports 0 (changed 2026-08-11 — previously read a real value).** It used
+  to read the Windows "GPU Engine" performance counter category via
+  `System.Diagnostics.PerformanceCounter`. On a real render-node PC with corrupted
+  performance-counter registry data (a known, fairly common Windows environmental issue), simply
+  *constructing* a `PerformanceCounter` — even for CPU%, not just GPU% — crashed the entire Agent
+  process every ~9-14 seconds with an `AccessViolationException`, confirmed via that PC's own
+  Windows Event Log after crash logging was added. `AccessViolationException` is a corrupted-state
+  exception that modern .NET (Core/5+) does not let managed code catch under any circumstances, so
+  no amount of `try/catch` around the `PerformanceCounter` calls could have prevented this — the
+  only real fix was removing `PerformanceCounter` entirely. CPU% and RAM% were replaced with direct
+  Win32 calls (`GetSystemTimes`, `GlobalMemoryStatusEx`) that don't touch that subsystem; GPU% has
+  no equivalent non-PerformanceCounter Win32 API, so it's now honestly reported as 0 rather than
+  risk the same crash recurring on another machine with corrupted perf-counter data. See
+  `BasicNodeMetricsProvider`'s remarks and docs/PROGRESS.md for the full incident.
 - **No version-compatibility gating (spec section 28).** `Envelope.protocolVersion` is on the wire
   but the Master doesn't yet reject or flag an out-of-date Agent — there's only been one protocol
   version to compare against so far.

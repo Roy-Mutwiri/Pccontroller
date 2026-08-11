@@ -858,13 +858,63 @@ first assumed.
       with an actual exception and stack trace), so the next report from PC3 should be
       immediately diagnosable instead of another round of guessing.
 
+## PC3 crash root-caused and fixed: PerformanceCounter + corrupted perf-counter registry data (2026-08-11)
+
+Resolution to the "still closing on PC3" saga. The crash-logging fix above didn't catch anything —
+`tfagent-crash.txt` stayed empty and Agent's own log showed clean connect/subscribe cycles with no
+error, ever, right up until the process just stopped emitting log lines. That ruled out AV/Defender
+(the user confirmed it was disabled and the crash still happened) and pointed at something below
+what managed exception handlers can see. Built `installer\Collect-Diagnostics.ps1` to pull
+Windows' own Application event log (`Get-WinEvent`, Error/Critical, last 2 hours) — Windows records
+a crash there even when nothing in-process does. That surfaced the exact answer: identical crashes,
+every single time, all `System.AccessViolationException` inside
+`System.Diagnostics.PerformanceCounter`'s registry-based perf-data read, triggered by
+`BasicNodeMetricsProvider.Sample()` on the connection's first post-connect heartbeat (heartbeat
+interval is 2s; matches the observed ~9-14s "alive" window almost exactly). Adjacent
+`Microsoft-Windows-Perflib` errors for an unrelated Windows service in the same event log confirmed
+the actual root cause: that PC's performance-counter registry data is corrupted — a real, fairly
+common Windows environmental issue (normally fixed with `lodctr /R`, but not something this app
+should require an end user to run).
+
+The reason the earlier crash-logging fix (`AppDomain.UnhandledException`/
+`DispatcherUnhandledException`) never caught this: `AccessViolationException` is a corrupted-state
+exception, and modern .NET (Core/5+) does not let managed code catch those under any
+circumstances — not via a normal `catch`, not via those global handlers, nothing. The existing
+`try/catch` wrapped around every `PerformanceCounter` call in `BasicNodeMetricsProvider` had
+*always* been silently ineffective against this exact failure mode; it just never actually fired
+on the dev machines used up to this point, since their perf-counter data happened to be intact.
+
+- [x] `BasicNodeMetricsProvider` rewritten to never construct a `PerformanceCounter` at all. CPU%
+      now comes from `GetSystemTimes` (raw kernel32 P/Invoke, no registry/perflib involvement,
+      idle/kernel/user tick deltas between calls). RAM% is unchanged (`GlobalMemoryStatusEx` was
+      never part of the crash — only `PerformanceCounter` touched the corrupted subsystem). GPU%
+      now honestly reports 0 always — there's no non-PerformanceCounter Win32 API for it, and
+      after this incident it's not worth the same crash risk on some other machine for a
+      already-documented "best-effort" metric. `IDisposable` dropped from the class — nothing left
+      to dispose once `PerformanceCounter` is gone.
+- [x] 3 new real tests (`TradeFix.Network.Tests/BasicNodeMetricsProviderTests.cs`) — construct the
+      real provider and call `Sample()` for real (not mocked): plausible first-call values, a
+      real-delay second call to exercise the actual `GetSystemTimes` delta math, and 10 repeated
+      calls mirroring the heartbeat's actual call pattern. Full solution: 87/87 passing.
+- [x] Root-cause chain fully verified from a live production machine, not reasoned from source
+      alone: `installer\Collect-Diagnostics.bat` → Windows Event Log → identical stack trace on
+      every single one of ~6 crash occurrences over the debugging session, all pointing at the
+      same line. This is about as confirmed as a fix can be without a second live re-test on that
+      exact PC (which is the natural next verification step, not yet done as of this entry).
+- [ ] Diagnostic tooling built along the way is worth keeping even though this specific crash is
+      fixed: `installer\Collect-Diagnostics.bat` (one-click log+crash-trace+event-log collector,
+      copies straight to clipboard) and the `AppDomain.UnhandledException`/
+      `DispatcherUnhandledException`/`TaskScheduler.UnobservedTaskException` logging in Master/
+      Agent/Launcher's `App.xaml.cs` both remain valuable for any *future* managed-exception crash
+      (which, unlike this one, they will actually catch).
+
 ## Next up
 
-Get the actual crash trace from PC3 now that Agent logs unhandled exceptions (check
-`%LocalAppData%\TradeFixBroadcast\Agent\logs` and `%TEMP%\tfagent-crash.txt` after it happens
-again) and fix whatever it actually says. Live-verify the audio sync fix and the echo fix against
-PC2/PC3 under genuine network pressure (not just local reasoning/loopback tests). Then Phase 4's
-remaining source types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE instead
-of whole-object UPDATE_SOURCE for bandwidth efficiency, and eventually per-app audio isolation +
-real mixing (Phase 7) once sources can carry genuinely different audio instead of all sharing the
+Live-verify the PerformanceCounter fix actually resolves PC3's crash for real (reinstall the
+latest build, confirm it stays connected past the ~9-14s mark that killed every previous attempt).
+Live-verify the audio sync fix and the echo fix against PC2/PC3 under genuine network pressure
+(not just local reasoning/loopback tests). Then Phase 4's remaining source types (Video file,
+Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE instead of whole-object UPDATE_SOURCE for
+bandwidth efficiency, and eventually per-app audio isolation + real mixing (Phase 7) once sources
+can carry genuinely different audio instead of all sharing the
 one system-wide signal.

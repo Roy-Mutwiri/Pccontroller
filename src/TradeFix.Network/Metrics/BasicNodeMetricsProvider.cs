@@ -1,32 +1,46 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using TradeFix.Shared.Models;
 
 namespace TradeFix.Network.Metrics;
 
 /// <summary>
-/// Best-effort local machine metrics using Windows Performance Counters and Win32 memory status.
-/// PerformanceCounter's first NextValue() call after construction is unreliable (needs a warm-up
-/// sample), which is why counters are created once and reused across calls to <see cref="Sample"/>
-/// rather than per-call. GPU utilization uses the "GPU Engine" counter category (Windows 10+,
-/// no admin rights required); if it is unavailable (older Windows, missing driver telemetry) this
-/// falls back to 0 rather than throwing — see docs/KNOWN_LIMITATIONS.md.
+/// Best-effort local machine metrics using Win32 memory/CPU-time APIs — deliberately NOT
+/// <c>System.Diagnostics.PerformanceCounter</c> (removed 2026-08-11; see below).
+///
+/// This class used to read CPU% via <c>PerformanceCounter("Processor", "% Processor Time",
+/// "_Total")</c> and GPU% via the "GPU Engine" counter category. On a real render-node PC, this
+/// crashed the entire Agent process every ~9-14 seconds (right on the first post-connect
+/// heartbeat) with <c>System.AccessViolationException</c> deep inside
+/// <c>PerformanceCounterLib.GetPerformanceData</c> — confirmed via Windows' own "Application
+/// Error"/".NET Runtime" event log entries after the app got proper crash logging (see
+/// docs/PROGRESS.md). The PC's performance-counter registry data was corrupted (evidenced by
+/// adjacent Microsoft-Windows-Perflib errors for an unrelated service in the same event log —
+/// this is a known, fairly common Windows environmental issue, normally fixed with `lodctr /R`,
+/// but not something this app can require an end user to run). Critically,
+/// <c>AccessViolationException</c> is a corrupted-state exception that modern .NET (Core/5+)
+/// simply does not let managed code catch — the existing <c>try/catch</c> around every
+/// <c>PerformanceCounter</c> call did nothing, because the runtime never gives a catch block the
+/// chance to run. The only real fix is not touching that subsystem at all, hence Win32 APIs here
+/// instead: <c>GetSystemTimes</c> for CPU (kernel32, no registry/perflib involvement) and
+/// <c>GlobalMemoryStatusEx</c> for RAM (already used, unaffected — it was only ever
+/// PerformanceCounter that touched the corrupted subsystem). GPU utilization has no equivalent
+/// non-PerformanceCounter Win32 API, so it's simply reported as 0 rather than risk the same crash
+/// class recurring on another machine with corrupted perf-counter data — see
+/// docs/KNOWN_LIMITATIONS.md.
 /// </summary>
-public sealed class BasicNodeMetricsProvider : INodeMetricsProvider, IDisposable
+public sealed class BasicNodeMetricsProvider : INodeMetricsProvider
 {
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
-    private PerformanceCounter? _cpuCounter;
-    private PerformanceCounter[]? _gpuCounters;
-    private bool _initialized;
+    private (ulong Idle, ulong Kernel, ulong User)? _lastCpuSample;
 
     public NodeMetrics Sample()
     {
-        EnsureInitialized();
-
         return new NodeMetrics
         {
-            CpuPercent = SafeRead(_cpuCounter),
-            GpuPercent = SampleGpu(),
+            CpuPercent = SampleCpuPercent(),
+            GpuPercent = 0,
             RamPercent = SampleRamPercent(),
             Fps = 0,
             LatencyMs = 0,
@@ -34,82 +48,42 @@ public sealed class BasicNodeMetricsProvider : INodeMetricsProvider, IDisposable
         };
     }
 
-    private void EnsureInitialized()
+    /// <summary>System-wide CPU load via the delta between two <c>GetSystemTimes</c> samples
+    /// (idle/kernel/user tick counts since boot). The first call after startup has no prior
+    /// sample to diff against, so it reports 0 — the next call (2s later, per the heartbeat
+    /// interval) has a real delta.</summary>
+    private double SampleCpuPercent()
     {
-        if (_initialized)
-        {
-            return;
-        }
-
-        _initialized = true;
-
-        try
-        {
-            _cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
-            _cpuCounter.NextValue();
-        }
-        catch
-        {
-            _cpuCounter = null;
-        }
-
-        try
-        {
-            var category = new PerformanceCounterCategory("GPU Engine");
-            var instances = category.GetInstanceNames()
-                .Where(name => name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-
-            _gpuCounters = instances
-                .Select(name =>
-                {
-                    try
-                    {
-                        var counter = new PerformanceCounter("GPU Engine", "Utilization Percentage", name);
-                        counter.NextValue();
-                        return counter;
-                    }
-                    catch
-                    {
-                        return null;
-                    }
-                })
-                .Where(c => c is not null)
-                .Select(c => c!)
-                .ToArray();
-        }
-        catch
-        {
-            _gpuCounters = [];
-        }
-    }
-
-    private double SampleGpu()
-    {
-        if (_gpuCounters is not { Length: > 0 })
+        if (!GetSystemTimes(out var idle, out var kernel, out var user))
         {
             return 0;
         }
 
-        return Math.Min(100, _gpuCounters.Sum(SafeRead));
-    }
+        var idleTicks = ToUInt64(idle);
+        var kernelTicks = ToUInt64(kernel);
+        var userTicks = ToUInt64(user);
 
-    private static double SafeRead(PerformanceCounter? counter)
-    {
-        if (counter is null)
+        if (_lastCpuSample is not { } last)
+        {
+            _lastCpuSample = (idleTicks, kernelTicks, userTicks);
+            return 0;
+        }
+
+        _lastCpuSample = (idleTicks, kernelTicks, userTicks);
+
+        var idleDelta = idleTicks - last.Idle;
+        var totalDelta = (kernelTicks - last.Kernel) + (userTicks - last.User);
+        if (totalDelta == 0)
         {
             return 0;
         }
 
-        try
-        {
-            return counter.NextValue();
-        }
-        catch
-        {
-            return 0;
-        }
+        var busy = totalDelta - idleDelta;
+        return Math.Clamp(busy * 100.0 / totalDelta, 0, 100);
     }
+
+    private static ulong ToUInt64(FILETIME time) =>
+        ((ulong)(uint)time.dwHighDateTime << 32) | (uint)time.dwLowDateTime;
 
     private static double SampleRamPercent()
     {
@@ -120,6 +94,10 @@ public sealed class BasicNodeMetricsProvider : INodeMetricsProvider, IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx buffer);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetSystemTimes(out FILETIME lpIdleTime, out FILETIME lpKernelTime, out FILETIME lpUserTime);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MemoryStatusEx
@@ -133,17 +111,5 @@ public sealed class BasicNodeMetricsProvider : INodeMetricsProvider, IDisposable
         public ulong ullTotalVirtual;
         public ulong ullAvailVirtual;
         public ulong ullAvailExtendedVirtual;
-    }
-
-    public void Dispose()
-    {
-        _cpuCounter?.Dispose();
-        if (_gpuCounters is not null)
-        {
-            foreach (var counter in _gpuCounters)
-            {
-                counter.Dispose();
-            }
-        }
     }
 }
