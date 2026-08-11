@@ -80,11 +80,19 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Segoe UI Variable is Windows 11's refined system face (the closest thing Windows has to
+         SF Pro's spirit: tighter metrics, more geometric, a real "Display" cut for headings).
+         Falls back to classic Segoe UI on older Windows 10 builds that lack it. -->
+    <FontFamily x:Key="Font.Text">Segoe UI Variable Text, Segoe UI</FontFamily>
+    <FontFamily x:Key="Font.Display">Segoe UI Variable Display, Segoe UI Semibold, Segoe UI</FontFamily>
+
     <Style TargetType="Window">
         <Setter Property="Background" Value="{StaticResource Brush.WindowBackdrop}" />
         <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="{StaticResource Font.Text}" />
         <Setter Property="FontSize" Value="13" />
+        <Setter Property="TextOptions.TextFormattingMode" Value="Ideal" />
+        <Setter Property="TextOptions.TextRenderingMode" Value="ClearType" />
     </Style>
 
     <Style TargetType="TextBlock">
@@ -98,7 +106,8 @@
 
     <Style x:Key="Text.Heading" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
-        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontFamily" Value="{StaticResource Font.Display}" />
+        <Setter Property="FontSize" Value="17" />
         <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 

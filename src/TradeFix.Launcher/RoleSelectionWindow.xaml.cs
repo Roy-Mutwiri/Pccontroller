@@ -14,6 +14,7 @@ public partial class RoleSelectionWindow : Window
     public RoleSelectionWindow()
     {
         InitializeComponent();
+        WindowChromeHelper.ApplyDarkTitleBar(this);
     }
 
     private void MasterCard_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => Choose(LauncherRole.Master);

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using TradeFix.Setup.Services;
 
 namespace TradeFix.Setup;
 
@@ -16,6 +17,7 @@ public partial class MainWindow : Window
     public MainWindow(bool isUninstall)
     {
         InitializeComponent();
+        WindowChromeHelper.ApplyDarkTitleBar(this);
         _isUninstall = isUninstall;
         LogList.ItemsSource = _logLines;
 
