@@ -93,9 +93,15 @@ public sealed class ScreenCaptureService : IDisposable
     {
         var interval = TimeSpan.FromSeconds(1.0 / _targetFps);
 
+        // Absolute schedule, not per-iteration delays: "capture, then sleep the remainder"
+        // accumulates timer quantization every tick and measurably under-delivers the configured
+        // FPS by ~10-16% — while the H.264 encoder is told the nominal rate. Tracking the next
+        // tick's absolute due-time makes small overshoots self-correct instead of compounding.
+        var nextTick = DateTime.UtcNow;
+
         while (!cancellationToken.IsCancellationRequested)
         {
-            var frameStart = DateTime.UtcNow;
+            nextTick += interval;
 
             try
             {
@@ -123,8 +129,8 @@ public sealed class ScreenCaptureService : IDisposable
                 // A single bad frame shouldn't kill the capture loop; next tick tries again.
             }
 
-            var elapsed = DateTime.UtcNow - frameStart;
-            var remaining = interval - elapsed;
+            var now = DateTime.UtcNow;
+            var remaining = nextTick - now;
             if (remaining > TimeSpan.Zero)
             {
                 try
@@ -135,6 +141,12 @@ public sealed class ScreenCaptureService : IDisposable
                 {
                     break;
                 }
+            }
+            else if (remaining < -interval)
+            {
+                // Fell more than a full frame behind (slow capture/encode) — resynchronize the
+                // schedule instead of trying to burst-catch-up with back-to-back captures.
+                nextTick = now;
             }
         }
     }
@@ -289,13 +301,15 @@ public sealed class ScreenCaptureService : IDisposable
         return bitmap;
     }
 
+    private static readonly ImageCodecInfo JpegEncoder =
+        ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+
     private byte[] EncodeJpeg(Bitmap bitmap)
     {
-        var jpegEncoder = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
         using var encoderParams = new EncoderParameters(1);
         encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, _quality);
         using var stream = new MemoryStream();
-        bitmap.Save(stream, jpegEncoder, encoderParams);
+        bitmap.Save(stream, JpegEncoder, encoderParams);
         return stream.ToArray();
     }
 

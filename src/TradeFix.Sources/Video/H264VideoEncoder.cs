@@ -37,6 +37,13 @@ public sealed class H264VideoEncoder : IDisposable
     private int _consecutiveFailures;
     private bool _disposed;
 
+    /// <summary>True while executing inside the stdout pump's own call chain (its
+    /// EncodedDataAvailable handlers and anything they call). Guards <see cref="Dispose"/>
+    /// against waiting on the pump from within the pump — that wait can never succeed and would
+    /// burn its full timeout as a video stall. AsyncLocal flows through the pump's awaits and
+    /// synchronous event dispatch, exactly the paths a re-entrant Dispose arrives on.</summary>
+    private static readonly AsyncLocal<bool> InsidePumpCallback = new();
+
     /// <summary>Fires from a background thread with each chunk of encoded H.264 bytes as ffmpeg
     /// produces them. Chunks are arbitrary byte ranges of the Annex-B stream, NOT aligned to
     /// frame/NAL boundaries — receivers must feed them to a decoder in order, as a stream.</summary>
@@ -175,6 +182,7 @@ public sealed class H264VideoEncoder : IDisposable
 
         _stdoutPump = Task.Run(async () =>
         {
+            InsidePumpCallback.Value = true;
             var buffer = new byte[64 * 1024];
             try
             {
@@ -225,6 +233,16 @@ public sealed class H264VideoEncoder : IDisposable
     {
         _disposed = true;
         KillProcess();
+
+        if (InsidePumpCallback.Value)
+        {
+            // Dispose reached from within the pump's own call chain (e.g. an
+            // EncodedDataAvailable handler triggering a capture restart) — waiting on the pump
+            // here would wait on ourselves and always burn the full timeout. The process is
+            // already killed above; the pump ends on its own as stdout closes.
+            return;
+        }
+
         try
         {
             // Wait for the stdout pump to drain ffmpeg's final flushed frames through

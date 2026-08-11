@@ -10,7 +10,16 @@ public sealed partial class NodeViewModel : ObservableObject
 
     [ObservableProperty] private string _nodeId = string.Empty;
     [ObservableProperty] private string _name = string.Empty;
+
+    // The NotifyPropertyChangedFor attributes are load-bearing: RoleLabel/StatusLabel/
+    // StatusBrushKey are computed getters over these fields, and without explicit notification
+    // the node cards would render their INITIAL status forever — a node could disconnect and its
+    // card would keep glowing green.
+    [NotifyPropertyChangedFor(nameof(RoleLabel))]
     [ObservableProperty] private NodeRole _role;
+
+    [NotifyPropertyChangedFor(nameof(StatusLabel))]
+    [NotifyPropertyChangedFor(nameof(StatusBrushKey))]
     [ObservableProperty] private NodeConnectionState _connectionState;
     [ObservableProperty] private string? _ipAddress;
     [ObservableProperty] private double _cpuPercent;

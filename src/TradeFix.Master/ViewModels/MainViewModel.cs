@@ -32,6 +32,14 @@ public sealed partial class MainViewModel : ObservableObject
     public ObservableCollection<SceneItemViewModel> Scenes { get; } = [];
     public ObservableCollection<SourceItemViewModel> ActiveSceneSources { get; } = [];
 
+    /// <summary>Transient node online/offline notifications, rendered as a toast stack in the
+    /// window's bottom-right corner. See <see cref="NotifyNodePresenceChange"/>.</summary>
+    public ObservableCollection<ToastViewModel> Toasts { get; } = [];
+
+    /// <summary>Last known connected-ness per node, so only genuine online/offline *transitions*
+    /// toast (not every heartbeat state refresh). UI-thread only.</summary>
+    private readonly Dictionary<string, bool> _lastKnownConnected = new();
+
     [ObservableProperty] private string? _activePairingCode;
     [ObservableProperty] private string? _startupWarning;
     [ObservableProperty] private string _serverSummary = string.Empty;
@@ -65,7 +73,7 @@ public sealed partial class MainViewModel : ObservableObject
         host.Registry.NodeChanged += OnNodeChanged;
         host.Registry.NodeRemoved += OnNodeRemoved;
         host.LogSink.EntryAdded += OnLogEntryAdded;
-        host.Project.Changed += () => _dispatcher.Invoke(RebuildFromProject);
+        host.Project.Changed += () => _ = _dispatcher.InvokeAsync(RebuildFromProject);
         host.LocalCaptureFrame += (sourceId, jpegBytes) =>
         {
             LiveFramePump pump;
@@ -85,7 +93,7 @@ public sealed partial class MainViewModel : ObservableObject
             pump.Post(jpegBytes);
         };
 
-        host.AdaptiveSettingsChanged += (sourceId, isThrottled, quality, maxDimension) => _dispatcher.Invoke(() =>
+        host.AdaptiveSettingsChanged += (sourceId, isThrottled, quality, maxDimension) => _ = _dispatcher.InvokeAsync(() =>
         {
             var item = ActiveSceneSources.FirstOrDefault(s => s.Id == sourceId);
             if (item is null)
@@ -224,7 +232,20 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var hash = _host.Assets.SaveFile(dialog.FileName);
+        string hash;
+        try
+        {
+            hash = _host.Assets.SaveFile(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            // Locked file, vanished network share, unreadable media — must not crash the UI thread.
+            System.Windows.MessageBox.Show(
+                $"Couldn't read that file:\n{ex.Message}",
+                "Add Image Source", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
         var fileName = System.IO.Path.GetFileName(dialog.FileName);
         var config = JsonSerializer.SerializeToElement(new { assetHash = hash, fileName }, ProtocolSerializer.Options);
         _host.Project.AddSource(SourceType.Image, fileName, config, new Transform2D { X = 300, Y = 200, Width = 320, Height = 240 });
@@ -237,7 +258,7 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void AddCaptureSource()
     {
-        var dialog = new WindowPickerDialog();
+        var dialog = new WindowPickerDialog { Owner = System.Windows.Application.Current.MainWindow };
         if (dialog.ShowDialog() != true || dialog.Selected is null)
         {
             return;
@@ -257,7 +278,7 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task AddBrowserSource()
     {
-        var dialog = new AddBrowserSourceDialog();
+        var dialog = new AddBrowserSourceDialog { Owner = System.Windows.Application.Current.MainWindow };
         if (dialog.ShowDialog() != true || dialog.Url is null)
         {
             return;
@@ -299,7 +320,11 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        if (SelectedSource.Type != SourceType.DisplayCapture)
+        // Only source types whose config genuinely IS these fields may be overwritten here. The
+        // old check ("anything but capture") let Apply replace an Image source's
+        // { assetHash, fileName } config with { color } — permanently destroying the image on
+        // every node with one click.
+        if (SelectedSource.Type is SourceType.Text or SourceType.Background)
         {
             var config = SelectedSource.Type == SourceType.Text
                 ? JsonSerializer.SerializeToElement(new { text = SelectedSource.TextContent, color = SelectedSource.ColorHex }, ProtocolSerializer.Options)
@@ -348,9 +373,29 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void CopyConnectCode()
     {
-        if (!string.IsNullOrEmpty(ActivePairingCode))
+        if (string.IsNullOrEmpty(ActivePairingCode))
+        {
+            return;
+        }
+
+        try
         {
             System.Windows.Clipboard.SetText(ActivePairingCode);
+        }
+        catch (Exception)
+        {
+            // Clipboard.SetText throws CLIPBRD_E_CANT_OPEN whenever another process (clipboard
+            // managers, RDP) momentarily holds the clipboard — a classic WPF crash. One retry
+            // covers the common transient case; beyond that the code is still on screen to copy
+            // by hand.
+            try
+            {
+                System.Windows.Clipboard.SetText(ActivePairingCode);
+            }
+            catch (Exception)
+            {
+                // still held — the visible code remains selectable manually
+            }
         }
     }
 
@@ -361,9 +406,13 @@ public sealed partial class MainViewModel : ObservableObject
         _host.AddSimulatedNode($"Simulated PC{_simulatedNodeCount + 1}");
     }
 
+    // These three handlers run inline inside network receive loops / the log bus on background
+    // threads. They use fire-and-forget InvokeAsync, never blocking Invoke: a blocking Invoke
+    // here would stall every node's session receive loop (and, in one measured chain, mutually
+    // deadlock with an encoder teardown for the full 3s timeout) whenever the UI thread is busy.
     private void OnNodeChanged(NodeInfo node)
     {
-        _dispatcher.Invoke(() =>
+        _ = _dispatcher.InvokeAsync(() =>
         {
             var existing = Nodes.FirstOrDefault(n => n.NodeId == node.NodeId);
             if (existing is null)
@@ -374,24 +423,81 @@ public sealed partial class MainViewModel : ObservableObject
             {
                 existing.Apply(node);
             }
+
+            NotifyNodePresenceChange(node);
         });
+    }
+
+    /// <summary>Toasts a node's online/offline transitions ("self" excluded — the Master
+    /// announcing its own presence to its own operator would be noise). Only actual crossings of
+    /// the online/offline boundary toast; heartbeat-driven state churn between the various
+    /// connected states (Online/Syncing/Synced) stays silent.</summary>
+    private void NotifyNodePresenceChange(NodeInfo node)
+    {
+        if (node.NodeId == "self")
+        {
+            return;
+        }
+
+        var isConnected = node.ConnectionState is NodeConnectionState.Online
+            or NodeConnectionState.Syncing or NodeConnectionState.Synced;
+        var wasConnected = _lastKnownConnected.TryGetValue(node.NodeId, out var previous) && previous;
+        _lastKnownConnected[node.NodeId] = isConnected;
+
+        if (isConnected && !wasConnected)
+        {
+            ShowToast($"{node.Name} is online", positive: true);
+        }
+        else if (!isConnected && wasConnected && node.ConnectionState == NodeConnectionState.Offline)
+        {
+            ShowToast($"{node.Name} went offline", positive: false);
+        }
+    }
+
+    private void ShowToast(string message, bool positive)
+    {
+        var toast = new ToastViewModel { Message = message, IsPositive = positive };
+        Toasts.Add(toast);
+        while (Toasts.Count > 4)
+        {
+            Toasts.RemoveAt(0);
+        }
+
+        var dismiss = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        dismiss.Tick += (_, _) =>
+        {
+            dismiss.Stop();
+            toast.IsClosing = true;
+
+            var remove = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            remove.Tick += (_, _) =>
+            {
+                remove.Stop();
+                Toasts.Remove(toast);
+            };
+            remove.Start();
+        };
+        dismiss.Start();
     }
 
     private void OnNodeRemoved(string nodeId)
     {
-        _dispatcher.Invoke(() =>
+        _ = _dispatcher.InvokeAsync(() =>
         {
             var existing = Nodes.FirstOrDefault(n => n.NodeId == nodeId);
             if (existing is not null)
             {
                 Nodes.Remove(existing);
+                ShowToast($"{existing.Name} was removed", positive: false);
             }
+
+            _lastKnownConnected.Remove(nodeId);
         });
     }
 
     private void OnLogEntryAdded(LogEntry entry)
     {
-        _dispatcher.Invoke(() =>
+        _ = _dispatcher.InvokeAsync(() =>
         {
             RecentLogLines.Add(Format(entry));
             while (RecentLogLines.Count > 200)

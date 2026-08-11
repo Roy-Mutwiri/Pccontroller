@@ -111,30 +111,48 @@ public sealed class AudioCaptureService : IDisposable
                 break;
             }
 
-            int read;
-            try
+            // Read every full chunk currently buffered, not just one per tick: PeriodicTimer
+            // coalesces missed ticks, so a one-chunk-per-tick pump that ever falls behind
+            // (UI stall, scheduler hiccup) stays behind forever — audio arrives late by the
+            // accumulated backlog. Draining per tick means a hiccup adds latency once and the
+            // next tick catches back up to live.
+            for (var drained = 0; drained < 10; drained++)
             {
-                read = _outputProvider!.Read(buffer, 0, buffer.Length);
-            }
-            catch
-            {
-                break; // capture device went away (e.g. output device changed) — stop cleanly
-            }
-
-            if (read > 0 && ChunkCaptured is not null)
-            {
-                var chunk = new byte[read];
-                Array.Copy(buffer, chunk, read);
-                var timestampMs = (long)(cumulativeBytesCaptured / bytesPerMillisecond);
-                cumulativeBytesCaptured += read;
+                int read;
                 try
                 {
-                    await ChunkCaptured.Invoke(chunk, timestampMs);
+                    read = _outputProvider!.Read(buffer, 0, buffer.Length);
                 }
                 catch
                 {
-                    // a single failed delivery (e.g. broadcast to a dropped subscriber) shouldn't
-                    // kill the capture pump
+                    return; // capture device went away (e.g. output device changed) — stop cleanly
+                }
+
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                if (ChunkCaptured is not null)
+                {
+                    var chunk = new byte[read];
+                    Array.Copy(buffer, chunk, read);
+                    var timestampMs = (long)(cumulativeBytesCaptured / bytesPerMillisecond);
+                    cumulativeBytesCaptured += read;
+                    try
+                    {
+                        await ChunkCaptured.Invoke(chunk, timestampMs);
+                    }
+                    catch
+                    {
+                        // a single failed delivery (e.g. broadcast to a dropped subscriber)
+                        // shouldn't kill the capture pump
+                    }
+                }
+
+                if (read < buffer.Length)
+                {
+                    break; // consumed everything currently available — back to the timer
                 }
             }
         }

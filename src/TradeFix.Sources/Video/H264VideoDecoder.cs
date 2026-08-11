@@ -126,6 +126,23 @@ public sealed class H264VideoDecoder : IDisposable
         {
             // process torn down — nothing left to pump
         }
+        finally
+        {
+            // The pump exiting for ANY reason (clean EOF, BMP desync, a throwing subscriber)
+            // means no one will ever read stdout again — if ffmpeg is still alive it would fill
+            // the pipe, stall forever, and leak. Ensure it dies with the pump.
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    _process.Kill();
+                }
+            }
+            catch
+            {
+                // already exiting/disposed — nothing to clean up
+            }
+        }
     }
 
     private static async Task<bool> ReadExactlyAsync(Stream stream, byte[] buffer, int offset, int count)

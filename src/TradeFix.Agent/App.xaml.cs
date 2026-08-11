@@ -72,9 +72,19 @@ public partial class App : Application
         }
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        await Host.DisposeAsync();
+        // Deliberately synchronous — see Master's App.xaml.cs: an async void OnExit races
+        // process shutdown against its own teardown.
+        try
+        {
+            Host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // best-effort teardown on the way out
+        }
+
         base.OnExit(e);
     }
 

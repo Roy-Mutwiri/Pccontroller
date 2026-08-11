@@ -27,7 +27,7 @@ public partial class RenderWindow : Window
 
         host.SceneLoaded += scene =>
         {
-            Dispatcher.Invoke(() => viewModel.ApplyScene(scene));
+            _ = Dispatcher.InvokeAsync(() => viewModel.ApplyScene(scene));
 
             var liveIds = scene.Sources.Select(s => s.Id).ToHashSet();
             lock (_pumpsLock)
@@ -40,8 +40,8 @@ public partial class RenderWindow : Window
             }
         };
 
-        host.SourceUpdated += source => Dispatcher.Invoke(() => viewModel.ApplySourceUpdate(source));
-        host.AssetReady += (sourceId, path) => Dispatcher.Invoke(() => viewModel.ApplyAssetPath(sourceId, path));
+        host.SourceUpdated += source => _ = Dispatcher.InvokeAsync(() => viewModel.ApplySourceUpdate(source));
+        host.AssetReady += (sourceId, path) => _ = Dispatcher.InvokeAsync(() => viewModel.ApplyAssetPath(sourceId, path));
 
         host.LiveFrameReceived += (sourceId, jpegBytes) =>
         {

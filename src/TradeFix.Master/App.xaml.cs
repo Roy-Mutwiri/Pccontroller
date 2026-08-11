@@ -28,9 +28,21 @@ public partial class App : Application
         window.Show();
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        await Host.DisposeAsync();
+        // Deliberately synchronous: the old "async void OnExit" returned at its first await,
+        // letting the process finish exiting mid-teardown — captures/encoders/server cleanup
+        // silently raced process death. Nothing here dispatches back to the UI thread (handlers
+        // use fire-and-forget InvokeAsync), so blocking is safe.
+        try
+        {
+            Host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // best-effort teardown on the way out
+        }
+
         base.OnExit(e);
     }
 

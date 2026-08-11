@@ -66,6 +66,35 @@
         </DrawingBrush.Drawing>
     </DrawingBrush>
 
+    <!-- Entrance animation for cards/panels that appear at runtime (node cards, toasts):
+         a short fade + upward settle, so new UI arrives instead of popping into existence. -->
+    <Style x:Key="Panel.Entrance" TargetType="Border">
+        <Setter Property="RenderTransform">
+            <Setter.Value>
+                <TranslateTransform Y="0" />
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <EventTrigger RoutedEvent="Loaded">
+                <BeginStoryboard>
+                    <Storyboard>
+                        <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.22">
+                            <DoubleAnimation.EasingFunction>
+                                <CubicEase EasingMode="EaseOut" />
+                            </DoubleAnimation.EasingFunction>
+                        </DoubleAnimation>
+                        <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
+                                          From="10" To="0" Duration="0:0:0.26">
+                            <DoubleAnimation.EasingFunction>
+                                <CubicEase EasingMode="EaseOut" />
+                            </DoubleAnimation.EasingFunction>
+                        </DoubleAnimation>
+                    </Storyboard>
+                </BeginStoryboard>
+            </EventTrigger>
+        </Style.Triggers>
+    </Style>
+
     <!-- Reusable pulsing-opacity animation for "live" status dots -->
     <Style x:Key="Ellipse.Pulse" TargetType="Ellipse">
         <Style.Triggers>

@@ -11,7 +11,16 @@ public sealed class LogBus : ILogSink
     {
         foreach (var sink in _sinks)
         {
-            sink.Write(entry);
+            try
+            {
+                sink.Write(entry);
+            }
+            catch
+            {
+                // A failing sink (disk full, file locked by a backup tool, a throwing UI
+                // subscriber) must never take down the code that merely tried to log — logging
+                // is observability, not a dependency.
+            }
         }
     }
 

@@ -24,8 +24,11 @@ public sealed class FilePathToImageSourceConverter : IValueConverter
             bitmap.Freeze();
             return bitmap;
         }
-        catch (NotSupportedException)
+        catch
         {
+            // WPF does NOT swallow converter exceptions — anything escaping here (IOException on
+            // a vanished/locked file, corrupt image data, OOM on a huge file) crashes the whole
+            // app during render. A missing image is always better than a dead render node.
             return null;
         }
     }

@@ -49,7 +49,7 @@ public partial class App : Application
         CreateTrayIcon();
         StartRole(_settings.Role, showErrorIfMissing: true);
 
-        _supervisor.ProcessExitedUnexpectedly += () => Dispatcher.Invoke(OnSupervisedAppExited);
+        _supervisor.ProcessExitedUnexpectedly += () => _ = Dispatcher.InvokeAsync(OnSupervisedAppExited);
     }
 
     /// <summary>The supervised app exited on its own. Both apps now have in-app "switch this PC's

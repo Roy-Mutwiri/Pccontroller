@@ -33,10 +33,33 @@ public sealed class AgentHost : IAsyncDisposable
     /// subscription, one player, regardless of how many sources have audio enabled.</summary>
     private const string SharedAudioSourceId = "desktop-audio";
 
+    /// <summary>Largest single media/audio WebSocket message the Agent will assemble. Real
+    /// messages are ≤64KB H.264 chunks, JPEG frames (a few MB at 4K/quality-100), or ~10KB audio
+    /// chunks — anything bigger means a corrupted/hostile stream, and buffering it unbounded
+    /// would balloon memory until OOM.</summary>
+    private const int MaxIncomingMessageBytes = 32 * 1024 * 1024;
+
     private readonly HttpClient _httpClient = new();
+
+    /// <summary>Guards <see cref="_liveSubscriptions"/> and <see cref="_audioSubscription"/> —
+    /// scene syncs arrive on the connection's receive thread, while Logout/Dispose run on the UI
+    /// thread; plain Dictionary mutation from both would race.</summary>
+    private readonly object _subscriptionsLock = new();
     private readonly Dictionary<string, CancellationTokenSource> _liveSubscriptions = new();
     private CancellationTokenSource? _audioSubscription;
     private (WaveOutEvent Player, BufferedWaveProvider Buffer)? _audioPlayer;
+
+    private long _videoBytesReceived;
+    private long _videoFramesDisplayed;
+
+    /// <summary>Total compressed video bytes received off the network across all media
+    /// subscriptions — the UI diffs this once a second into a live bitrate readout, so an
+    /// operator can *see* what the link is actually carrying instead of guessing about lag.</summary>
+    public long VideoBytesReceived => Interlocked.Read(ref _videoBytesReceived);
+
+    /// <summary>Total frames handed to the render window (decoded H.264 frames or fallback
+    /// JPEGs) — diffed into a live displayed-FPS readout.</summary>
+    public long VideoFramesDisplayed => Interlocked.Read(ref _videoFramesDisplayed);
 
     public AgentSettings Settings { get; private set; }
     public LogBus Log { get; } = new();
@@ -76,14 +99,17 @@ public sealed class AgentHost : IAsyncDisposable
     /// its credential files.</summary>
     public async Task LogoutAsync()
     {
-        foreach (var cts in _liveSubscriptions.Values)
+        lock (_subscriptionsLock)
         {
-            cts.Cancel();
-        }
+            foreach (var cts in _liveSubscriptions.Values)
+            {
+                cts.Cancel();
+            }
 
-        _liveSubscriptions.Clear();
-        _audioSubscription?.Cancel();
-        _audioSubscription = null;
+            _liveSubscriptions.Clear();
+            _audioSubscription?.Cancel();
+            _audioSubscription = null;
+        }
 
         if (Connection is not null)
         {
@@ -107,8 +133,15 @@ public sealed class AgentHost : IAsyncDisposable
 
     public AgentConnection Connect(AgentSettings settings)
     {
+        // A previous connection (retrying a bad address, or an old Master after log-out) must
+        // not keep reconnect-looping in the background alongside the new one.
+        if (Connection is { } previous)
+        {
+            _ = previous.DisposeAsync();
+            Connection = null;
+        }
+
         Settings = settings;
-        AgentSettingsStore.Save(settings);
 
         var connection = new AgentConnection(
             WebSocketTransportFactory.ForMaster(settings.MasterHost, settings.MasterPort),
@@ -130,8 +163,20 @@ public sealed class AgentHost : IAsyncDisposable
             Log.Write(LogCategory.Node, "AgentHost", $"Paired with Master as {credentials.NodeId}");
         };
 
+        // Persist the Master's address only once this attempt actually succeeds — persisting on
+        // attempt meant one mistyped/expired connect code permanently hid the first-run connect
+        // UI behind a saved address that never worked.
+        var settingsPersisted = false;
         connection.StateChanged += state =>
+        {
+            if (state == NodeConnectionState.Online && !settingsPersisted)
+            {
+                settingsPersisted = true;
+                AgentSettingsStore.Save(settings);
+            }
+
             Log.Write(LogCategory.Network, "AgentHost", $"Connection state -> {state}");
+        };
 
         connection.MessageReceived += envelope =>
         {
@@ -179,8 +224,12 @@ public sealed class AgentHost : IAsyncDisposable
             return;
         }
 
-        if (!source.Config.TryGetProperty("assetHash", out var hashProp) || hashProp.GetString() is not { } hash)
+        if (!source.Config.TryGetProperty("assetHash", out var hashProp)
+            || hashProp.ValueKind != JsonValueKind.String
+            || hashProp.GetString() is not { } hash)
         {
+            // A non-string assetHash (malformed scene payload) must not throw here — this runs
+            // on the connection's receive thread, and an exception would poison every LOAD_SCENE.
             return;
         }
 
@@ -229,24 +278,27 @@ public sealed class AgentHost : IAsyncDisposable
     /// (spec section 38).</summary>
     private void SyncLiveSubscriptions(IReadOnlyList<SourceDefinition> currentSources)
     {
-        var liveIds = currentSources.Where(IsLiveCaptureSource).Select(s => s.Id).ToHashSet();
-
-        foreach (var staleId in _liveSubscriptions.Keys.Where(id => !liveIds.Contains(id)).ToList())
+        lock (_subscriptionsLock)
         {
-            _liveSubscriptions[staleId].Cancel();
-            _liveSubscriptions.Remove(staleId);
-        }
+            var liveIds = currentSources.Where(IsLiveCaptureSource).Select(s => s.Id).ToHashSet();
 
-        foreach (var source in currentSources.Where(IsLiveCaptureSource))
-        {
-            if (_liveSubscriptions.ContainsKey(source.Id))
+            foreach (var staleId in _liveSubscriptions.Keys.Where(id => !liveIds.Contains(id)).ToList())
             {
-                continue;
+                _liveSubscriptions[staleId].Cancel();
+                _liveSubscriptions.Remove(staleId);
             }
 
-            var cts = new CancellationTokenSource();
-            _liveSubscriptions[source.Id] = cts;
-            _ = RunMediaSubscriptionAsync(source.Id, cts.Token);
+            foreach (var source in currentSources.Where(IsLiveCaptureSource))
+            {
+                if (_liveSubscriptions.ContainsKey(source.Id))
+                {
+                    continue;
+                }
+
+                var cts = new CancellationTokenSource();
+                _liveSubscriptions[source.Id] = cts;
+                _ = RunMediaSubscriptionAsync(source.Id, cts.Token);
+            }
         }
     }
 
@@ -256,17 +308,59 @@ public sealed class AgentHost : IAsyncDisposable
         && source.Config.TryGetProperty("live", out var liveProp)
         && liveProp.ValueKind == JsonValueKind.True;
 
+    /// <summary>Keeps a source's media subscription alive for as long as the source exists in the
+    /// scene: the inner body runs one WebSocket's lifetime, and this loop reconnects with backoff
+    /// whenever it drops. Without this, a single network blip (or a Master restart) silently and
+    /// permanently froze that source's video on this node until a scene change happened to arrive —
+    /// the subscription entry stayed registered but nothing was listening anymore.</summary>
     private async Task RunMediaSubscriptionAsync(string sourceId, CancellationToken cancellationToken)
+    {
+        var backoff = TimeSpan.FromSeconds(1);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var connected = false;
+            try
+            {
+                connected = await RunMediaSubscriptionOnceAsync(sourceId, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            backoff = connected ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 15));
+            try
+            {
+                await Task.Delay(backoff, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <returns>true if the socket connected at all (used to reset the retry backoff).</returns>
+    private async Task<bool> RunMediaSubscriptionOnceAsync(string sourceId, CancellationToken cancellationToken)
     {
         using var socket = new ClientWebSocket();
         try
         {
             await socket.ConnectAsync(new Uri($"ws://{Settings.MasterHost}:{Settings.MasterPort}/media/{sourceId}"), cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            Log.Write(LogCategory.Error, "AgentHost", $"Failed to connect media subscription for {sourceId}", ex);
-            return;
+            Log.Write(LogCategory.Error, "AgentHost", $"Failed to connect media subscription for {sourceId} — will retry", ex);
+            return false;
         }
 
         Log.Write(LogCategory.Media, "AgentHost", $"Media subscription connected for {sourceId}");
@@ -291,14 +385,20 @@ public sealed class AgentHost : IAsyncDisposable
                     result = await socket.ReceiveAsync(buffer, cancellationToken);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        return;
+                        return true;
                     }
 
                     frame.Write(buffer, 0, result.Count);
+                    if (frame.Length > MaxIncomingMessageBytes)
+                    {
+                        Log.Write(LogCategory.Error, "AgentHost", $"Media message for {sourceId} exceeded {MaxIncomingMessageBytes} bytes — dropping the connection");
+                        return true;
+                    }
                 }
                 while (!result.EndOfMessage);
 
                 var message = frame.ToArray();
+                Interlocked.Add(ref _videoBytesReceived, message.Length);
 
                 if (H264StreamProtocol.IsRestartMarker(message))
                 {
@@ -309,6 +409,7 @@ public sealed class AgentHost : IAsyncDisposable
 
                 if (H264StreamProtocol.IsCompleteJpeg(message))
                 {
+                    Interlocked.Increment(ref _videoFramesDisplayed);
                     LiveFrameReceived?.Invoke(sourceId, message);
                     continue;
                 }
@@ -329,7 +430,11 @@ public sealed class AgentHost : IAsyncDisposable
                     }
 
                     decoder = new H264VideoDecoder(ffmpegPath);
-                    decoder.FrameDecoded += bmp => LiveFrameReceived?.Invoke(sourceId, bmp);
+                    decoder.FrameDecoded += bmp =>
+                    {
+                        Interlocked.Increment(ref _videoFramesDisplayed);
+                        LiveFrameReceived?.Invoke(sourceId, bmp);
+                    };
                 }
 
                 try
@@ -352,16 +457,18 @@ public sealed class AgentHost : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            // subscription cancelled — expected on scene switch/source removal
+            throw; // subscription cancelled — scene switch/source removal; outer loop stops
         }
         catch (Exception ex)
         {
-            Log.Write(LogCategory.Error, "AgentHost", $"Media subscription for {sourceId} dropped", ex);
+            Log.Write(LogCategory.Error, "AgentHost", $"Media subscription for {sourceId} dropped — will retry", ex);
         }
         finally
         {
             decoder?.Dispose();
         }
+
+        return true;
     }
 
     /// <summary>One subscription+player for the Master's single shared desktop-audio channel,
@@ -371,18 +478,21 @@ public sealed class AgentHost : IAsyncDisposable
     /// audio are independent streams, each tolerant of the other dropping out.</summary>
     private void SyncAudioSubscriptions(IReadOnlyList<SourceDefinition> currentSources)
     {
-        var wantsAudio = currentSources.Any(IsAudioCaptureSource);
+        lock (_subscriptionsLock)
+        {
+            var wantsAudio = currentSources.Any(IsAudioCaptureSource);
 
-        if (!wantsAudio && _audioSubscription is not null)
-        {
-            _audioSubscription.Cancel();
-            _audioSubscription = null;
-        }
-        else if (wantsAudio && _audioSubscription is null)
-        {
-            var cts = new CancellationTokenSource();
-            _audioSubscription = cts;
-            _ = RunAudioSubscriptionAsync(cts);
+            if (!wantsAudio && _audioSubscription is not null)
+            {
+                _audioSubscription.Cancel();
+                _audioSubscription = null;
+            }
+            else if (wantsAudio && _audioSubscription is null)
+            {
+                var cts = new CancellationTokenSource();
+                _audioSubscription = cts;
+                _ = RunAudioSubscriptionAsync(cts);
+            }
         }
     }
 
@@ -391,25 +501,71 @@ public sealed class AgentHost : IAsyncDisposable
         && source.Config.TryGetProperty("audio", out var audioProp)
         && audioProp.ValueKind == JsonValueKind.True;
 
+    /// <summary>Retry wrapper mirroring <see cref="RunMediaSubscriptionAsync"/>: audio keeps
+    /// reconnecting with backoff for as long as some source wants it, instead of silently staying
+    /// dead after a network blip until the next scene change.</summary>
     private async Task RunAudioSubscriptionAsync(CancellationTokenSource ownCts)
+    {
+        var backoff = TimeSpan.FromSeconds(1);
+        try
+        {
+            while (!ownCts.Token.IsCancellationRequested)
+            {
+                var connected = false;
+                try
+                {
+                    connected = await RunAudioSubscriptionOnceAsync(ownCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                if (ownCts.Token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                backoff = connected ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 15));
+                try
+                {
+                    await Task.Delay(backoff, ownCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            lock (_subscriptionsLock)
+            {
+                // Clear only if we're still the current subscription — a newer SyncAudioSubscriptions
+                // may already have replaced us; don't stomp on it.
+                if (ReferenceEquals(_audioSubscription, ownCts))
+                {
+                    _audioSubscription = null;
+                }
+            }
+        }
+    }
+
+    private async Task<bool> RunAudioSubscriptionOnceAsync(CancellationToken cancellationToken)
     {
         using var socket = new ClientWebSocket();
         try
         {
-            await socket.ConnectAsync(new Uri($"ws://{Settings.MasterHost}:{Settings.MasterPort}/audio/{SharedAudioSourceId}"), ownCts.Token);
+            await socket.ConnectAsync(new Uri($"ws://{Settings.MasterHost}:{Settings.MasterPort}/audio/{SharedAudioSourceId}"), cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            Log.Write(LogCategory.Error, "AgentHost", "Failed to connect audio subscription", ex);
-            // Clear only if we're still the current subscription — a newer call to
-            // SyncAudioSubscriptions may already have replaced us; don't stomp on it. Clearing
-            // here (rather than leaving a dead entry behind) is what lets the next scene sync retry.
-            if (ReferenceEquals(_audioSubscription, ownCts))
-            {
-                _audioSubscription = null;
-            }
-
-            return;
+            Log.Write(LogCategory.Error, "AgentHost", "Failed to connect audio subscription — will retry", ex);
+            return false;
         }
 
         var bufferedWaveProvider = new BufferedWaveProvider(AudioFormat)
@@ -420,27 +576,21 @@ public sealed class AgentHost : IAsyncDisposable
 
         // WaveOutEvent.Init/Play throws if this PC has no default playback device (WASAPI
         // "NoDriver", e.g. a headless render node or one with audio disabled/muted at the OS
-        // level). This runs on a fire-and-forget Task (SyncAudioSubscriptions doesn't await it),
-        // so an uncaught exception here wouldn't normally crash the whole app — but it's cheap to
-        // guarantee that and fail this one subscription gracefully instead of leaving it to
-        // .NET's unobserved-task-exception handling, and it means video keeps working even when a
-        // node genuinely has no audio output.
+        // level). Fail this one attempt gracefully — video keeps working even when a node
+        // genuinely has no audio output. DesiredLatency trims WaveOut's default ~300ms internal
+        // buffering; 150ms keeps playback comfortably glitch-free while shaving noticeable
+        // audio-behind-video delay.
         WaveOutEvent player;
         try
         {
-            player = new WaveOutEvent();
+            player = new WaveOutEvent { DesiredLatency = 150 };
             player.Init(bufferedWaveProvider);
             player.Play();
         }
         catch (Exception ex)
         {
             Log.Write(LogCategory.Error, "AgentHost", "No audio playback device available on this PC — audio disabled, video unaffected", ex);
-            if (ReferenceEquals(_audioSubscription, ownCts))
-            {
-                _audioSubscription = null;
-            }
-
-            return;
+            return true; // connected fine; the device, not the network, is the problem
         }
 
         _audioPlayer = (player, bufferedWaveProvider);
@@ -452,19 +602,24 @@ public sealed class AgentHost : IAsyncDisposable
         var buffer = new byte[64 * 1024];
         try
         {
-            while (!ownCts.Token.IsCancellationRequested && socket.State == WebSocketState.Open)
+            while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
                 using var chunk = new MemoryStream();
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await socket.ReceiveAsync(buffer, ownCts.Token);
+                    result = await socket.ReceiveAsync(buffer, cancellationToken);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        return;
+                        return true;
                     }
 
                     chunk.Write(buffer, 0, result.Count);
+                    if (chunk.Length > MaxIncomingMessageBytes)
+                    {
+                        Log.Write(LogCategory.Error, "AgentHost", "Audio message exceeded the size cap — dropping the connection");
+                        return true;
+                    }
                 }
                 while (!result.EndOfMessage);
 
@@ -472,6 +627,15 @@ public sealed class AgentHost : IAsyncDisposable
                 if (!AudioChunkFraming.TryDecode(framed, out var timestampMs, out var pcm))
                 {
                     continue; // malformed/truncated message — skip rather than play garbage
+                }
+
+                // Drift guard: if playback has fallen far behind (buffer near its 2s cap —
+                // e.g. after the PC slept or the device stalled), reset to live rather than
+                // playing seconds behind the video forever.
+                if (bufferedWaveProvider.BufferedDuration > TimeSpan.FromSeconds(1))
+                {
+                    bufferedWaveProvider.ClearBuffer();
+                    gapFiller.Reset();
                 }
 
                 var silenceBytes = gapFiller.SilenceBytesBefore(timestampMs, pcm.Count);
@@ -484,21 +648,28 @@ public sealed class AgentHost : IAsyncDisposable
 
                 bufferedWaveProvider.AddSamples(pcm.Array!, pcm.Offset, pcm.Count);
             }
+
+            return true;
         }
         catch (OperationCanceledException)
         {
-            // subscription cancelled — expected on scene switch/source removal/audio toggled off
+            throw; // audio toggled off / scene switch — outer loop stops
         }
         catch (Exception ex)
         {
-            Log.Write(LogCategory.Error, "AgentHost", "Audio subscription dropped", ex);
+            Log.Write(LogCategory.Error, "AgentHost", "Audio subscription dropped — will retry", ex);
+            return true;
         }
         finally
         {
-            StopAudioPlayer();
-            if (ReferenceEquals(_audioSubscription, ownCts))
+            // Tear down THIS attempt's player specifically — never whatever the field currently
+            // holds, which may already belong to a newer attempt (the old code's shared-field
+            // teardown could dispose a successor's live player).
+            player.Stop();
+            player.Dispose();
+            if (_audioPlayer is { } current && ReferenceEquals(current.Player, player))
             {
-                _audioSubscription = null;
+                _audioPlayer = null;
             }
         }
     }
@@ -515,12 +686,16 @@ public sealed class AgentHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var cts in _liveSubscriptions.Values)
+        lock (_subscriptionsLock)
         {
-            cts.Cancel();
+            foreach (var cts in _liveSubscriptions.Values)
+            {
+                cts.Cancel();
+            }
+
+            _audioSubscription?.Cancel();
         }
 
-        _audioSubscription?.Cancel();
         StopAudioPlayer();
 
         if (Connection is not null)

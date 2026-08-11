@@ -18,7 +18,10 @@ internal static class WindowChromeHelper
     private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
 
     /// <summary>Safe to call before the window's handle exists yet (hooks SourceInitialized) or
-    /// after (applies immediately) — callers don't need to know which.</summary>
+    /// after (applies immediately) — callers don't need to know which. Also gives the window a
+    /// short entrance fade — windows snapping into existence at full opacity reads as abrupt
+    /// next to the rest of the app's animated feel, and every window already routes through
+    /// here, so this is the one place that keeps the entrance identical app-wide.</summary>
     public static void ApplyDarkTitleBar(Window window)
     {
         if (PresentationSource.FromVisual(window) is not null)
@@ -29,6 +32,13 @@ internal static class WindowChromeHelper
         {
             window.SourceInitialized += (_, _) => Apply(window);
         }
+
+        window.Opacity = 0;
+        window.Loaded += (_, _) => window.BeginAnimation(UIElement.OpacityProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(240))
+            {
+                EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut }
+            });
     }
 
     private static void Apply(Window window)

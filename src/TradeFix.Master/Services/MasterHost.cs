@@ -42,6 +42,16 @@ public sealed class MasterHost : IAsyncDisposable
     /// never exist; sources running the JPEG fallback simply aren't in this dictionary.</summary>
     private readonly Dictionary<string, H264VideoEncoder> _activeEncoders = new();
 
+    /// <summary>Serializes every capture/encoder/audio lifecycle mutation. These dictionaries are
+    /// reached from at least four different threads — the UI thread (add/edit/remove source), the
+    /// 50ms broadcast timer (adaptive step-up), capture/encoder-pump threads (adaptive step-down
+    /// via FrameDropped), and thread-pool threads (encoder-failure fallback) — and plain
+    /// Dictionary is documented unsafe under concurrent mutation: the failure mode is internal
+    /// corruption/InvalidOperationException precisely under network pressure, i.e. mid-broadcast.
+    /// Everything under this lock is non-blocking (starting/stopping captures, dictionary writes);
+    /// events and logging fire outside it.</summary>
+    private readonly object _capturesLock = new();
+
     /// <summary>Set when an encoder gives up mid-run (ffmpeg dying repeatedly) — from then on
     /// every capture (re)start uses the JPEG fallback instead of burning a broken ffmpeg per
     /// source. Never reset within a run; ffmpeg doesn't come back mid-session.</summary>
@@ -107,14 +117,13 @@ public sealed class MasterHost : IAsyncDisposable
         var pairingCodes = new PairingCodeRepository(dbFactory);
         Pairing = new PairingService(pairingCodes);
         Assets = new AssetStore(Path.Combine(AppPaths.DataRoot("Master"), "assets"));
-        // Video queue depth 60 in H.264 mode vs 1 otherwise: H.264 messages are consecutive
-        // ranges of one continuous stream (drops corrupt the picture until the next keyframe),
-        // so short send bursts should be absorbed — and at H.264 bitrates 60 queued chunks is
-        // small. In JPEG mode depth must stay 1 (latest-frame-wins): queueing full JPEG frames
-        // behind a slow link is exactly the ever-growing-lag bug MediaHub was built to fix.
-        // Audio stays at 1 always — chunks are independent and timestamped, and the Agent's
-        // AudioSyncGapFiller silence-fills any drop.
-        MediaHub = new MediaHub(Log, subscriberQueueDepth: FfmpegLocator.Find() is not null ? 60 : 1);
+        // Video gets a ~384KB per-subscriber byte budget: bursts of H.264 chunks buffer (a drop
+        // would corrupt the picture until the next keyframe) while total backlog — and therefore
+        // standing latency — stays bounded (~0.4s on an 8Mbps link). Large JPEG fallback frames
+        // exceed the budget and naturally evict older ones, so latest-frame-wins still holds
+        // there with no mode switch. Audio uses budget 0 (strict latest-wins) — chunks are
+        // independent and timestamped, and the Agent's AudioSyncGapFiller silence-fills drops.
+        MediaHub = new MediaHub(Log, subscriberQueueBudgetBytes: 384 * 1024);
         AudioHub = new MediaHub(Log);
 
         Server = new MasterServer(Registry, pairedNodes, pairingCodes, settings.ServerName, AppVersion, Log, Assets, MediaHub, AudioHub);
@@ -135,8 +144,17 @@ public sealed class MasterHost : IAsyncDisposable
         // same timer rather than adding a second one just for that.
         _broadcastTimer = new System.Threading.Timer(_ =>
         {
-            FlushDirtyTransforms();
-            TickAdaptiveControllers();
+            // An unhandled exception in a System.Threading.Timer callback takes down the whole
+            // process — never let one escape.
+            try
+            {
+                FlushDirtyTransforms();
+                TickAdaptiveControllers();
+            }
+            catch (Exception ex)
+            {
+                Log.Write(LogCategory.Error, "MasterHost", "Broadcast timer tick failed", ex);
+            }
         }, null, BroadcastInterval, BroadcastInterval);
 
         MediaHub.FrameDropped += OnVideoFrameDropped;
@@ -165,7 +183,13 @@ public sealed class MasterHost : IAsyncDisposable
 
         if (steppedDown)
         {
-            RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension);
+            // Never restart from this thread: FrameDropped fires synchronously inside
+            // BroadcastFrameAsync, which in H.264 mode runs on the encoder's own stdout-pump
+            // thread — restarting there means H264VideoEncoder.Dispose waiting on the very task
+            // that's calling it (a guaranteed timeout-length video stall), plus lifecycle
+            // mutations on a hot media thread. A thread-pool hop makes the restart safe and
+            // keeps the pump moving.
+            _ = Task.Run(() => RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension));
         }
     }
 
@@ -200,16 +224,19 @@ public sealed class MasterHost : IAsyncDisposable
     /// transient throttle shouldn't silently overwrite what the operator actually configured.</summary>
     private void RestartCaptureWithAdaptiveSettings(string sourceId, int quality, int maxDimension)
     {
-        if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+        lock (_capturesLock)
         {
-            return;
-        }
+            if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+            {
+                return;
+            }
 
-        var targetWindow = existing.TargetWindow;
-        var fps = existing.TargetFps;
-        existing.Stop();
-        existing.Dispose();
-        StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
+            var targetWindow = existing.TargetWindow;
+            var fps = existing.TargetFps;
+            existing.Stop();
+            existing.Dispose();
+            StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
+        }
 
         bool isThrottled;
         lock (_adaptiveLock)
@@ -263,7 +290,27 @@ public sealed class MasterHost : IAsyncDisposable
                 "see docs/NODE_SYSTEM.md). Falling back to localhost-only; render nodes on other PCs " +
                 "will not be able to connect until this is resolved.";
             Log.Write(LogCategory.Error, "MasterHost", _startupWarning);
-            Server.Start(Settings.ControlPort, bindAllInterfaces: false);
+            try
+            {
+                Server.Start(Settings.ControlPort, bindAllInterfaces: false);
+            }
+            catch (HttpListenerException ex)
+            {
+                // Even localhost failed — almost always "port already in use" (a second Master
+                // instance). Surface it instead of crashing at startup; the UI stays usable for
+                // reading the warning and closing the duplicate.
+                _startupWarning =
+                    $"Port {Settings.ControlPort} is unavailable (is another Master already running on this PC?). " +
+                    "Nodes cannot connect until this instance owns the port — close the other instance and restart.";
+                Log.Write(LogCategory.Error, "MasterHost", _startupWarning, ex);
+            }
+        }
+        catch (HttpListenerException ex)
+        {
+            _startupWarning =
+                $"Port {Settings.ControlPort} is unavailable (is another Master already running on this PC?). " +
+                "Nodes cannot connect until this instance owns the port — close the other instance and restart.";
+            Log.Write(LogCategory.Error, "MasterHost", _startupWarning, ex);
         }
 
         Log.Write(LogCategory.Info, "MasterHost", $"Master started on port {Settings.ControlPort}");
@@ -373,10 +420,11 @@ public sealed class MasterHost : IAsyncDisposable
     /// resync (e.g. a node reconnecting) and show correctly if the Properties panel is reopened.</summary>
     public void UpdateCaptureSettings(string sourceId, int fps, int maxDimension, int quality, bool includeAudio)
     {
-        if (!_activeCaptures.TryGetValue(sourceId, out var existing))
-        {
-            return;
-        }
+        // The Properties panel binds these to raw TextBoxes — clamp here so a typo ("120" fps,
+        // "99999" px) can't drive the capture pipeline into absurd territory.
+        fps = Math.Clamp(fps, 1, 60);
+        maxDimension = Math.Clamp(maxDimension, 320, 3840);
+        quality = Math.Clamp(quality, 1, 100);
 
         var currentSource = Project.ActiveSceneSources.FirstOrDefault(s => s.Id == sourceId);
         string? windowTitle = currentSource is { Config.ValueKind: JsonValueKind.Object } &&
@@ -384,15 +432,23 @@ public sealed class MasterHost : IAsyncDisposable
                 ? titleProp.GetString()
                 : null;
 
-        var targetWindow = existing.TargetWindow;
-        existing.Stop();
-        existing.Dispose();
-        StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
-
-        StopAudioCapture(sourceId);
-        if (includeAudio)
+        lock (_capturesLock)
         {
-            StartAudioCapture(sourceId);
+            if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+            {
+                return;
+            }
+
+            var targetWindow = existing.TargetWindow;
+            existing.Stop();
+            existing.Dispose();
+            StartCaptureCore(sourceId, targetWindow, fps, maxDimension, quality);
+
+            StopAudioCapture(sourceId);
+            if (includeAudio)
+            {
+                StartAudioCapture(sourceId);
+            }
         }
 
         var config = JsonSerializer.SerializeToElement(
@@ -418,6 +474,16 @@ public sealed class MasterHost : IAsyncDisposable
 
     private void StartCapture(string sourceId, IntPtr? targetWindow, int fps, int maxDimension, int quality)
     {
+        // Reentrant under _capturesLock when called from the restart paths (C# locks are
+        // reentrant on the same thread); direct callers acquire it here.
+        lock (_capturesLock)
+        {
+            StartCaptureCore(sourceId, targetWindow, fps, maxDimension, quality);
+        }
+    }
+
+    private void StartCaptureCore(string sourceId, IntPtr? targetWindow, int fps, int maxDimension, int quality)
+    {
         StopEncoder(sourceId);
 
         var capture = new ScreenCaptureService(fps, maxDimension, targetWindow, quality);
@@ -432,7 +498,7 @@ public sealed class MasterHost : IAsyncDisposable
             encoder.EncodedDataAvailable += chunk =>
                 _ = MediaHub.BroadcastFrameAsync(sourceId, chunk, CancellationToken.None);
             encoder.StreamRestarted += () =>
-                _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None);
+                _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None, neverDrop: true);
             encoder.Failed += () =>
             {
                 Log.Write(LogCategory.Error, "MasterHost",
@@ -445,7 +511,7 @@ public sealed class MasterHost : IAsyncDisposable
 
             // A (re)connecting stream is always a fresh sequence — tell existing subscribers to
             // reset their decoders (no-op when there are none, e.g. a brand-new source).
-            _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None);
+            _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None, neverDrop: true);
 
             var previewInterval = Math.Max(1, fps);
             var frameCounter = 0;
@@ -488,73 +554,98 @@ public sealed class MasterHost : IAsyncDisposable
 
     private void RestartCaptureWithCurrentSettings(string sourceId)
     {
-        if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+        lock (_capturesLock)
         {
-            return;
-        }
+            if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+            {
+                return;
+            }
 
-        var targetWindow = existing.TargetWindow;
-        var fps = existing.TargetFps;
-        var maxDimension = existing.MaxDimension;
-        var quality = existing.Quality;
-        existing.Stop();
-        existing.Dispose();
-        StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
+            var targetWindow = existing.TargetWindow;
+            var fps = existing.TargetFps;
+            var maxDimension = existing.MaxDimension;
+            var quality = existing.Quality;
+            existing.Stop();
+            existing.Dispose();
+            StartCaptureCore(sourceId, targetWindow, fps, maxDimension, quality);
+        }
     }
 
     private void StopEncoder(string sourceId)
     {
-        if (_activeEncoders.Remove(sourceId, out var encoder))
+        lock (_capturesLock)
         {
-            encoder.Dispose();
+            if (_activeEncoders.Remove(sourceId, out var encoder))
+            {
+                encoder.Dispose();
+            }
         }
     }
 
     private void StartAudioCapture(string sourceId)
     {
-        _audioEnabledSources.Add(sourceId);
-        if (_sharedAudioCapture is not null)
+        lock (_capturesLock)
         {
-            return; // already running for another source — every source hears the same desktop audio
-        }
+            _audioEnabledSources.Add(sourceId);
+            if (_sharedAudioCapture is not null)
+            {
+                return; // already running for another source — every source hears the same desktop audio
+            }
 
-        var audioCapture = new AudioCaptureService();
-        audioCapture.ChunkCaptured += (bytes, timestampMs) =>
-            AudioHub.BroadcastFrameAsync(SharedAudioSourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
-        _sharedAudioCapture = audioCapture;
-        audioCapture.Start();
+            try
+            {
+                var audioCapture = new AudioCaptureService();
+                audioCapture.ChunkCaptured += (bytes, timestampMs) =>
+                    AudioHub.BroadcastFrameAsync(SharedAudioSourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
+                audioCapture.Start();
+                _sharedAudioCapture = audioCapture;
+            }
+            catch (Exception ex)
+            {
+                // WASAPI loopback throws when this PC has no default audio output device
+                // (headless box, RDP without audio, everything unplugged). That must degrade to
+                // silent video, not crash the whole broadcast on an "Add Capture Source" click.
+                Log.Write(LogCategory.Error, "MasterHost", "No audio output device available — capture continues without audio", ex);
+            }
+        }
     }
 
     private void StopAudioCapture(string sourceId)
     {
-        if (!_audioEnabledSources.Remove(sourceId) || _audioEnabledSources.Count > 0)
+        lock (_capturesLock)
         {
-            return; // other sources still want audio — keep the shared capture running
-        }
+            if (!_audioEnabledSources.Remove(sourceId) || _audioEnabledSources.Count > 0)
+            {
+                return; // other sources still want audio — keep the shared capture running
+            }
 
-        _sharedAudioCapture?.Stop();
-        _sharedAudioCapture?.Dispose();
-        _sharedAudioCapture = null;
+            _sharedAudioCapture?.Stop();
+            _sharedAudioCapture?.Dispose();
+            _sharedAudioCapture = null;
+        }
     }
 
     /// <summary>Removes a source, stopping any live capture (video and audio) it owns first.</summary>
     public void RemoveSource(string sourceId)
     {
-        if (_activeCaptures.Remove(sourceId, out var capture))
+        lock (_capturesLock)
         {
-            capture.Stop();
-            capture.Dispose();
-            Log.Write(LogCategory.Media, "MasterHost", $"Stopped screen capture for source {sourceId}");
-        }
+            if (_activeCaptures.Remove(sourceId, out var capture))
+            {
+                capture.Stop();
+                capture.Dispose();
+            }
 
-        StopEncoder(sourceId);
-        StopAudioCapture(sourceId);
+            StopEncoder(sourceId);
+            StopAudioCapture(sourceId);
+        }
 
         lock (_adaptiveLock)
         {
             _adaptiveControllers.Remove(sourceId);
         }
 
+        Log.Write(LogCategory.Media, "MasterHost", $"Stopped capture (if any) and removed source {sourceId}");
         Project.RemoveSource(sourceId);
     }
 
@@ -569,25 +660,33 @@ public sealed class MasterHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Stop the restart triggers before tearing captures down, so nothing races the cleanup
+        // below into starting a fresh capture/encoder mid-shutdown.
+        MediaHub.FrameDropped -= OnVideoFrameDropped;
         await _broadcastTimer.DisposeAsync();
 
-        foreach (var capture in _activeCaptures.Values)
+        lock (_capturesLock)
         {
-            capture.Stop();
-            capture.Dispose();
+            foreach (var capture in _activeCaptures.Values)
+            {
+                capture.Stop();
+                capture.Dispose();
+            }
+
+            _activeCaptures.Clear();
+
+            foreach (var encoder in _activeEncoders.Values)
+            {
+                encoder.Dispose();
+            }
+
+            _activeEncoders.Clear();
+
+            _sharedAudioCapture?.Stop();
+            _sharedAudioCapture?.Dispose();
+            _sharedAudioCapture = null;
+            _audioEnabledSources.Clear();
         }
-
-        foreach (var encoder in _activeEncoders.Values)
-        {
-            encoder.Dispose();
-        }
-
-        _activeEncoders.Clear();
-
-        _sharedAudioCapture?.Stop();
-        _sharedAudioCapture?.Dispose();
-        _sharedAudioCapture = null;
-        _audioEnabledSources.Clear();
 
         foreach (var simulator in _simulators)
         {

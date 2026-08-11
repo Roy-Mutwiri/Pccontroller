@@ -229,15 +229,31 @@ public sealed class AgentConnection(
         }
     }
 
+    /// <summary>Waits for a specific handshake response, tolerating unrelated messages arriving
+    /// first — the Master pushes LOAD_SCENE the moment a session is registered, and on a fast
+    /// LAN that can land in the receive queue before the AUTH/PAIR response is consumed. The old
+    /// "next message must be the response" version treated that as an auth failure, wrongly
+    /// discarding valid stored credentials and bouncing the node back to pairing.</summary>
     private async Task<T?> ReceiveAsync<T>(CommandType expectedType, CancellationToken cancellationToken)
     {
-        var envelope = await _transport!.ReceiveAsync(cancellationToken);
-        if (envelope is null || envelope.Type != expectedType)
+        for (var skipped = 0; skipped < 8; skipped++)
         {
-            return default;
+            var envelope = await _transport!.ReceiveAsync(cancellationToken);
+            if (envelope is null)
+            {
+                return default;
+            }
+
+            if (envelope.Type == expectedType)
+            {
+                return envelope.ReadPayload<T>();
+            }
+
+            log?.Write(new LogEntry(DateTimeOffset.UtcNow, LogCategory.Network, "AgentConnection",
+                $"Ignoring {envelope.Type} while waiting for {expectedType} during handshake"));
         }
 
-        return envelope.ReadPayload<T>();
+        return default;
     }
 
     private void SetState(NodeConnectionState state)

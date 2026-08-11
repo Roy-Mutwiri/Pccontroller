@@ -23,12 +23,27 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string? _connectCodeError;
     [ObservableProperty] private string? _connectedMasterSummary;
 
+    /// <summary>Live "what is this node actually receiving/showing" readout ("14 fps · 3.2 Mbps"),
+    /// refreshed once a second from AgentHost's real counters — null (hidden) while no video is
+    /// flowing. The direct answer to "is it lagging?": if fps is steady and bitrate nonzero, the
+    /// pipeline is healthy end to end on this node.</summary>
+    [ObservableProperty] private string? _videoStats;
+
+    private long _lastVideoBytes;
+    private long _lastVideoFrames;
+
     public ObservableCollection<string> RecentLogLines { get; } = [];
 
-    /// <summary>True once this Agent has ever successfully connected to a Master — after that,
-    /// it reconnects on its own at every launch and the "paste a connect code" UI never needs to
-    /// be shown again.</summary>
-    public bool KnowsMaster => !string.IsNullOrEmpty(_host.Settings.MasterHost);
+    /// <summary>Whether stored credentials existed at launch / whether this session has reached
+    /// Online at least once — together the evidence that a pairing genuinely WORKS, which is what
+    /// gates hiding the connect-code panel. Judging by "an address was entered" (the old rule)
+    /// meant one bad/expired code hid the first-run UI with nothing to show for it.</summary>
+    private bool _hasProvenPairing;
+
+    /// <summary>True once this Agent has a Master pairing that has actually succeeded (stored
+    /// credentials from a past session, or a successful connect this session) — after that, it
+    /// reconnects on its own and the "paste a connect code" UI stays hidden.</summary>
+    public bool KnowsMaster => !string.IsNullOrEmpty(_host.Settings.MasterHost) && _hasProvenPairing;
 
     public bool NeedsPairingCode => State == NodeConnectionState.Pairing;
 
@@ -37,14 +52,33 @@ public sealed partial class MainViewModel : ObservableObject
         _host = host;
         _dispatcher = dispatcher;
         _nodeName = host.Settings.NodeName;
+        _hasProvenPairing = CredentialStore.Load() is not null;
 
         host.LogSink.EntryAdded += OnLogEntryAdded;
+
+        var statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        statsTimer.Tick += (_, _) => RefreshVideoStats();
+        statsTimer.Start();
 
         if (KnowsMaster)
         {
             // Already paired in a previous session — reconnect automatically, no user action needed.
             BeginConnect(host.Settings, autoSubmitCode: null);
         }
+    }
+
+    private void RefreshVideoStats()
+    {
+        var bytes = _host.VideoBytesReceived;
+        var frames = _host.VideoFramesDisplayed;
+        var bytesPerSecond = bytes - _lastVideoBytes;
+        var framesPerSecond = frames - _lastVideoFrames;
+        _lastVideoBytes = bytes;
+        _lastVideoFrames = frames;
+
+        VideoStats = bytesPerSecond > 0 || framesPerSecond > 0
+            ? $"Video: {framesPerSecond} fps  ·  {bytesPerSecond * 8 / 1_000_000.0:0.0} Mbps"
+            : null;
     }
 
     [RelayCommand]
@@ -89,6 +123,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         await _host.LogoutAsync();
+        _hasProvenPairing = false;
         State = NodeConnectionState.Offline;
         NodeId = null;
         ConnectedMasterSummary = null;
@@ -127,11 +162,16 @@ public sealed partial class MainViewModel : ObservableObject
         _pendingParsedPairingCode = autoSubmitCode;
         var connection = _host.Connect(settings);
 
-        connection.StateChanged += state => _dispatcher.Invoke(() =>
+        connection.StateChanged += state => _ = _dispatcher.InvokeAsync(() =>
         {
             State = state;
             NodeId = connection.Credentials?.NodeId;
             ConnectedMasterSummary = $"{settings.MasterHost}:{settings.MasterPort}";
+            if (state == NodeConnectionState.Online)
+            {
+                _hasProvenPairing = true;
+            }
+
             OnPropertyChanged(nameof(NeedsPairingCode));
             OnPropertyChanged(nameof(KnowsMaster));
 
@@ -145,7 +185,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void OnLogEntryAdded(LogEntry entry)
     {
-        _dispatcher.Invoke(() =>
+        _ = _dispatcher.InvokeAsync(() =>
         {
             RecentLogLines.Add($"[{entry.Timestamp.LocalDateTime:HH:mm:ss}] [{entry.Category}] {entry.Message}");
             while (RecentLogLines.Count > 200)

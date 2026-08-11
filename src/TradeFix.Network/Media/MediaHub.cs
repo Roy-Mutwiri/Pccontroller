@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
-using System.Threading.Channels;
 using TradeFix.Common.Logging;
 
 namespace TradeFix.Network.Media;
@@ -11,38 +10,35 @@ namespace TradeFix.Network.Media;
 /// CONTROL CHANNEL and MEDIA/PREVIEW CHANNEL"). One MediaHub per Master; sourceId identifies
 /// which live capture a subscriber wants (a node may subscribe to several).
 ///
-/// Each subscriber has its own single-slot, latest-frame-wins queue and a dedicated background
-/// sender — <see cref="BroadcastFrameAsync"/> itself never waits on a socket write. This matters
-/// because capture quality was raised to (near-)maximum on request (see PROGRESS.md), which makes
-/// frames large enough that a slow link (e.g. Tailscale/WAN to a render node) can take noticeably
-/// longer to send than the capture interval. Before this, <c>BroadcastFrameAsync</c> awaited every
-/// subscriber's socket send in sequence — one slow node stalled the whole capture loop (including
-/// the local preview and every other node), and frames could pile up behind it, ever-growing lag
-/// as the backlog fell further behind real time. Now a slow node simply misses frames and always
-/// gets shown the most current one once its link catches up — standard live-broadcast behavior
-/// (the same tradeoff OBS makes when encoding falls behind: drop, don't queue).
+/// Each subscriber has its own bounded queue and a dedicated background sender —
+/// <see cref="BroadcastFrameAsync"/> itself never waits on a socket write, so one slow node can
+/// never stall capture or other nodes. The queue is bounded by BYTES, not message count
+/// (<paramref name="subscriberQueueBudgetBytes"/>), because bytes are what actually govern the
+/// two failure modes this protects against:
 ///
-/// Dropping frames fixes the lag, but it's also a live signal that the current encode settings
-/// exceed what a subscriber's link can carry — <see cref="FrameDropped"/> surfaces that so
-/// <c>AdaptiveEncodingController</c> can step quality/resolution down automatically instead of a
-/// subscriber just perpetually missing frames at a fixed high data rate.
+/// - Backlog latency: whatever is queued must cross the subscriber's link before anything newer —
+///   a byte budget IS a latency budget (e.g. 384KB ≈ 0.4s on an 8Mbps link), where a fixed
+///   message count was either seconds of standing lag for large messages or nothing for small.
+/// - Payload semantics: H.264 stream chunks are small and consecutive (drops corrupt until the
+///   next keyframe), so bursts should buffer; JPEG frames are large and independent (only the
+///   newest matters), so with a byte budget a big JPEG naturally evicts everything older —
+///   latest-frame-wins falls out of the same rule with no mode switch. Budget 0 means strict
+///   latest-wins (used for audio, whose receiver silence-fills any gap).
+///
+/// Overflow evicts the OLDEST data message (and fires <see cref="FrameDropped"/>, driving
+/// <c>AdaptiveEncodingController</c>) — but never a control message: H.264 restart markers
+/// (posted with <c>neverDrop: true</c>) must survive congestion, because a lost marker leaves the
+/// subscriber's decoder locked to a stale resolution with no self-heal (measured; see
+/// H264StreamProtocol).
 /// </summary>
-/// <param name="subscriberQueueDepth">How many unsent messages a subscriber's queue holds before
-/// the oldest is dropped. 1 (the default) is correct for independent-frame payloads (JPEG, audio
-/// chunks): only the newest matters. The H.264 video pipeline passes a deeper queue instead,
-/// because its messages are consecutive byte ranges of ONE continuous compressed stream — dropping
-/// any of them corrupts the picture until the next keyframe, so short send bursts should be
-/// absorbed rather than dropped. Sustained overload still drops (and still fires
-/// <see cref="FrameDropped"/> to drive adaptive quality); the corruption then self-heals at the
-/// next keyframe (≤1s).</param>
-public sealed class MediaHub(ILogSink? log = null, int subscriberQueueDepth = 1)
+public sealed class MediaHub(ILogSink? log = null, int subscriberQueueBudgetBytes = 0)
 {
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<WebSocket, SubscriberPump>> _subscribers = new();
 
     public void RegisterSubscriber(string sourceId, WebSocket socket)
     {
         var set = _subscribers.GetOrAdd(sourceId, _ => new ConcurrentDictionary<WebSocket, SubscriberPump>());
-        set[socket] = new SubscriberPump(socket, subscriberQueueDepth, log, sourceId, () => RemoveSubscriber(sourceId, socket));
+        set[socket] = new SubscriberPump(socket, subscriberQueueBudgetBytes, log, sourceId, () => RemoveSubscriber(sourceId, socket));
     }
 
     public void RemoveSubscriber(string sourceId, WebSocket socket)
@@ -56,7 +52,7 @@ public sealed class MediaHub(ILogSink? log = null, int subscriberQueueDepth = 1)
     public int SubscriberCount(string sourceId) =>
         _subscribers.TryGetValue(sourceId, out var set) ? set.Count : 0;
 
-    /// <summary>Fires when a broadcast frame had to replace one a subscriber hadn't finished
+    /// <summary>Fires when a broadcast frame had to evict one a subscriber hadn't finished
     /// sending yet — the real signal that a subscriber's link can't keep up with the current
     /// encode settings, used to drive <c>TradeFix.Master.Services.AdaptiveEncodingController</c>.
     /// Fired at most once per <see cref="BroadcastFrameAsync"/> call, even if several subscribers
@@ -64,18 +60,17 @@ public sealed class MediaHub(ILogSink? log = null, int subscriberQueueDepth = 1)
     public event Action<string>? FrameDropped;
 
     /// <summary>Hands the frame to every current subscriber's queue and returns immediately —
-    /// never waits on a network send, so a slow subscriber can never slow down capture or other
-    /// subscribers. If a subscriber hasn't finished sending the previous frame yet, this one
-    /// silently replaces it (only the latest frame is ever worth sending for a live feed) and
-    /// <see cref="FrameDropped"/> fires for that source.</summary>
-    public Task BroadcastFrameAsync(string sourceId, ReadOnlyMemory<byte> frameBytes, CancellationToken cancellationToken)
+    /// never waits on a network send. <paramref name="neverDrop"/> marks a control message
+    /// (e.g. an H.264 restart marker) that congestion must not evict; it also doesn't count
+    /// against the byte budget.</summary>
+    public Task BroadcastFrameAsync(string sourceId, ReadOnlyMemory<byte> frameBytes, CancellationToken cancellationToken, bool neverDrop = false)
     {
         if (_subscribers.TryGetValue(sourceId, out var set))
         {
             var anyDropped = false;
-            foreach (var pump in set.Values)
+            foreach (var entry in set)
             {
-                if (pump.Post(frameBytes))
+                if (entry.Value.Post(frameBytes, neverDrop))
                 {
                     anyDropped = true;
                 }
@@ -93,41 +88,87 @@ public sealed class MediaHub(ILogSink? log = null, int subscriberQueueDepth = 1)
     private sealed class SubscriberPump
     {
         private readonly WebSocket _socket;
-        private readonly int _queueDepth;
-        private readonly Channel<ReadOnlyMemory<byte>> _channel;
+        private readonly long _budgetBytes;
+        private readonly object _sync = new();
+        private readonly LinkedList<(ReadOnlyMemory<byte> Frame, bool IsControl)> _queue = new();
+        private long _queuedDataBytes;
+        private readonly SemaphoreSlim _signal = new(0);
         private readonly CancellationTokenSource _cts = new();
-        private readonly Task _pumpTask;
 
-        public SubscriberPump(WebSocket socket, int queueDepth, ILogSink? log, string sourceId, Action onDead)
+        public SubscriberPump(WebSocket socket, int budgetBytes, ILogSink? log, string sourceId, Action onDead)
         {
             _socket = socket;
-            _queueDepth = Math.Max(1, queueDepth);
-            _channel = Channel.CreateBounded<ReadOnlyMemory<byte>>(
-                new BoundedChannelOptions(_queueDepth) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true, SingleWriter = false });
-            _pumpTask = Task.Run(() => PumpAsync(log, sourceId, onDead));
+            _budgetBytes = Math.Max(0, budgetBytes);
+            _ = Task.Run(() => PumpAsync(log, sourceId, onDead));
         }
 
-        /// <returns>true if this write replaced a frame the pump hadn't sent yet (i.e. this
-        /// subscriber is falling behind at the current data rate).</returns>
-        public bool Post(ReadOnlyMemory<byte> frame)
+        /// <returns>true if admitting this frame evicted unsent data (i.e. this subscriber is
+        /// falling behind at the current data rate).</returns>
+        public bool Post(ReadOnlyMemory<byte> frame, bool isControl)
         {
-            var droppingExisting = _channel.Reader.Count >= _queueDepth;
-            _channel.Writer.TryWrite(frame);
-            return droppingExisting;
+            var evictedAnything = false;
+            lock (_sync)
+            {
+                if (!isControl)
+                {
+                    // Evict oldest DATA until this frame fits the byte budget. Control messages
+                    // are skipped over and always survive. With budget 0 this clears all queued
+                    // data — strict latest-wins.
+                    while (_queuedDataBytes > 0 && _queuedDataBytes + frame.Length > _budgetBytes)
+                    {
+                        var node = _queue.First;
+                        while (node is not null && node.Value.IsControl)
+                        {
+                            node = node.Next;
+                        }
+
+                        if (node is null)
+                        {
+                            break;
+                        }
+
+                        _queuedDataBytes -= node.Value.Frame.Length;
+                        _queue.Remove(node);
+                        evictedAnything = true;
+                    }
+
+                    _queuedDataBytes += frame.Length;
+                }
+
+                _queue.AddLast((frame, isControl));
+            }
+
+            _signal.Release();
+            return evictedAnything;
         }
 
-        public void Stop()
-        {
-            _cts.Cancel();
-            _channel.Writer.TryComplete();
-        }
+        public void Stop() => _cts.Cancel();
 
         private async Task PumpAsync(ILogSink? log, string sourceId, Action onDead)
         {
             try
             {
-                await foreach (var frame in _channel.Reader.ReadAllAsync(_cts.Token))
+                while (true)
                 {
+                    await _signal.WaitAsync(_cts.Token);
+
+                    ReadOnlyMemory<byte> frame;
+                    lock (_sync)
+                    {
+                        if (_queue.First is not { } first)
+                        {
+                            continue; // its frame was evicted after the signal — nothing to send
+                        }
+
+                        frame = first.Value.Frame;
+                        if (!first.Value.IsControl)
+                        {
+                            _queuedDataBytes -= frame.Length;
+                        }
+
+                        _queue.RemoveFirst();
+                    }
+
                     if (_socket.State != WebSocketState.Open)
                     {
                         onDead();

@@ -22,7 +22,8 @@
         <conv:FractionToPercentConverter x:Key="FractionToPercent" />
 
         <DataTemplate x:Key="NodeCardTemplate" DataType="{x:Type vm:NodeViewModel}">
-            <Border Background="{StaticResource Brush.Surface}"
+            <Border Style="{StaticResource Panel.Entrance}"
+                    Background="{StaticResource Brush.Surface}"
                     BorderBrush="{StaticResource Brush.Border}"
                     BorderThickness="1" CornerRadius="10"
                     Padding="16" Margin="0,0,12,12" Width="230">
@@ -482,5 +483,53 @@
                 </DockPanel>
             </Grid>
         </Border>
+
+        <!-- Toast stack: transient node online/offline notices, bottom-right over everything.
+             Hit-test disabled so it can never block clicks on the UI beneath it. -->
+        <ItemsControl ItemsSource="{Binding Toasts}" Grid.RowSpan="3"
+                      HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                      Margin="0,0,24,24" IsHitTestVisible="False">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate DataType="{x:Type vm:ToastViewModel}">
+                    <Border x:Name="ToastBd" Style="{StaticResource Panel.Entrance}"
+                            Background="{StaticResource Brush.Surface}"
+                            BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                            CornerRadius="10" Padding="14,10" Margin="0,8,0,0"
+                            HorizontalAlignment="Right">
+                        <Border.Effect>
+                            <DropShadowEffect Color="#FF000000" BlurRadius="18" ShadowDepth="0" Opacity="0.45" />
+                        </Border.Effect>
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="9" Height="9" VerticalAlignment="Center" Margin="0,0,9,0">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{StaticResource Brush.Warning}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsPositive}" Value="True">
+                                                <Setter Property="Fill" Value="{StaticResource Brush.Success}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Text="{Binding Message}" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
+                    <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding IsClosing}" Value="True">
+                            <DataTrigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ToastBd"
+                                                          Storyboard.TargetProperty="Opacity"
+                                                          To="0" Duration="0:0:0.3" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </DataTrigger.EnterActions>
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
     </Grid>
 </Window>
