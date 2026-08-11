@@ -45,6 +45,33 @@ foreach ($target in $targets) {
     }
 }
 
+# Stage ffmpeg.exe next to Master and Agent - the H.264 video pipeline (see
+# src\TradeFix.Sources\Video) probes for it there at runtime and silently falls back to the old
+# JPEG-per-frame pipeline when it's absent, so a missing ffmpeg produces a working-but-lower-quality
+# build rather than a broken one. Warn loudly either way: shipping without it forfeits the quality
+# fix on every PC that installs this package.
+$ffmpegSource = $null
+$wingetRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+if (Test-Path $wingetRoot) {
+    $ffmpegSource = Get-ChildItem $wingetRoot -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $ffmpegSource) {
+    $onPath = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $ffmpegSource = $onPath.Source }
+}
+
+if ($ffmpegSource) {
+    Write-Host "Staging ffmpeg.exe (H.264 video pipeline) from $ffmpegSource..." -ForegroundColor Cyan
+    foreach ($appFolder in @("TradeFix.Master-win-x64", "TradeFix.Agent-win-x64")) {
+        Copy-Item $ffmpegSource (Join-Path $repoRoot "publish\$appFolder\ffmpeg.exe") -Force
+    }
+}
+else {
+    Write-Host "WARNING: ffmpeg.exe not found on this build machine (winget install Gyan.FFmpeg to get it)." -ForegroundColor Yellow
+    Write-Host "The package will still work but every PC will run the lower-quality JPEG video fallback." -ForegroundColor Yellow
+}
+
 # Assemble dist\ into the layout TradeFix.Setup.exe itself expects at runtime
 # (Installer.ResolvePublishRoot: a "publish" folder as a direct child of the exe's own directory) -
 # this is what actually gets zipped and handed to another PC.

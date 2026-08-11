@@ -908,8 +908,77 @@ on the dev machines used up to this point, since their perf-counter data happene
       Agent/Launcher's `App.xaml.cs` both remain valuable for any *future* managed-exception crash
       (which, unlike this one, they will actually catch).
 
+## H.264 video pipeline: the real quality fix (2026-08-11)
+
+User: "my biggest worry is on quality we have very bad quality cant we maintain high quality with
+no lags." Root cause of "bad quality" was architectural, not a tuning problem: the pipeline sent
+every frame as an independent JPEG, which has zero compression *between* frames — so at real
+network bandwidth the AdaptiveEncodingController had no choice but to crush quality/resolution
+(the logs show it constantly pinned at quality=40 stepping between 640-2000px). A real video
+codec (H.264) spends bits only on what *changed* between frames — roughly an order of magnitude
+better quality at the same bandwidth for screen content. Implemented via an ffmpeg child process
+(the same engine OBS and most broadcast tools build on) rather than hand-written Media Foundation
+COM interop, for the same reason GDI beat Windows.Graphics.Capture and NAudio beat raw WASAPI
+earlier: it's verifiable with real tests in this environment. ffmpeg runs as a separate process,
+so its GPL license does not extend to this codebase.
+
+- [x] `H264VideoEncoder` (`TradeFix.Sources/Video`) — raw BGRA frames in via stdin, compressed
+      Annex-B H.264 out via stdout (`libx264 -preset veryfast -tune zerolatency`, keyframe every
+      second for fast mid-stream joins). Self-restarts on frame-size changes (window resized),
+      firing `StreamRestarted` after draining the old sequence. Gives up after 3 consecutive
+      process failures and signals `Failed` → Master falls back to JPEG for all captures.
+- [x] `H264VideoDecoder` — stream chunks in, complete self-describing BMP frames out
+      (`image2pipe -c:v bmp`), which WPF's existing decode path auto-detects: the renderer needed
+      zero changes. Every decoder flag was validated against measured behavior, and three of the
+      findings were the opposite of standard advice (all verified with real ffmpeg runs, see the
+      flag comments in the class): default input probing emits NOTHING live (5MB probe buffer);
+      raw Annex-B packets carry no timestamps (`pts=N/A` confirmed via ffprobe) so default output
+      sync silently dropped 2/3 of frames until `-fps_mode passthrough`; and `-fflags nobuffer` —
+      the standard live-stream flag — made ffmpeg emit zero frames against this stream shape.
+- [x] Measured (not assumed) with real ffmpeg: a long-lived decoder does NOT follow mid-stream
+      resolution changes — it silently scales new sequences to the first size ("Reconfiguring
+      filter graph" then 0 frames at the new size). Hence `H264StreamProtocol.RestartMarker`: a
+      distinct WebSocket message Master broadcasts before each new encode sequence; the Agent
+      disposes and recreates its decoder on receipt. Message kinds are distinguished per-message
+      (marker = exact match; JPEG = mandatory FF D8...FF D9 framing; else H.264 chunk), so the
+      JPEG fallback needs no protocol negotiation at all.
+- [x] Mid-stream joining verified for real: cutting the first 40% off an encoded stream and
+      feeding the tail to a fresh decoder produced full frames (SPS/PPS repeat at keyframes).
+- [x] `ScreenCaptureService` gained a raw-frame mode (`RawFrameCaptured`, reused buffer, JPEG
+      encode skipped entirely); `FfmpegLocator` probes app dir → PATH → winget and *validates by
+      actually running* the candidate (`-version`) — this sandbox proved an ffmpeg.exe can exist
+      on disk yet be App-Control-blocked while a byte-identical copy elsewhere runs, so existence
+      checks alone are worthless here. No working ffmpeg → the whole feature silently degrades to
+      the existing JPEG pipeline (fallback preserved end-to-end, including per-message on Agent).
+- [x] `MediaHub` subscriber queues now have configurable depth: 60 for video in H.264 mode
+      (chunks are consecutive ranges of ONE stream — a drop corrupts until the next keyframe, so
+      bursts get absorbed; sustained overload still drops + fires `FrameDropped` for adaptive
+      control), 1 (latest-wins) for JPEG mode and audio, where it remains correct.
+- [x] Adaptive quality preserved: the user's 1-100 quality maps to x264 CRF (100→16
+      near-visually-lossless, 40→32), so `AdaptiveEncodingController`'s existing step-down/up
+      logic now moves CRF instead of JPEG quantization.
+- [x] Master self-preview in H.264 mode: every ~5th raw frame BMP-wrapped (`BgraBmp`) for the
+      local canvas — no JPEG exists anywhere in that pipeline to reuse.
+- [x] Packaging: `Build-Distributable.ps1` stages ffmpeg.exe next to Master and Agent in
+      `publish\` (warns loudly if the build machine lacks it — the package then ships
+      working-but-JPEG-quality).
+- [x] Tests, all real (89/89 passing): encoder→decoder round trip with pixel-verified colors
+      including a mid-stream hard cut, and a compression assertion (encoded < 10% of raw);
+      resolution-change restart modeling the real marker protocol with per-sequence decoders;
+      real-screen raw capture coherence. The failing intermediate states along the way (0 frames,
+      then 9 of 30, then all-one-resolution) were each diagnosed with standalone ffmpeg/ffprobe
+      experiments before touching the code — the decoder flag set is derived from measurements,
+      not documentation folklore.
+- [ ] Not yet live-verified across the real PC2/PC3 network — the decisive test is a real
+      YouTube-style motion source at previously-unreachable quality settings holding steady
+      without the adaptive controller stepping down. JPEG fallback also means a node running an
+      OLD build against a new Master would show nothing for H.264 sources (it expects JPEG) —
+      all PCs should reinstall from the current package together.
+
 ## Next up
 
+Live-verify the H.264 pipeline across real PC2/PC3 links (quality holding at high settings under
+real bandwidth, restart marker behavior on window resize, ffmpeg staging via the installer).
 Live-verify the PerformanceCounter fix actually resolves PC3's crash for real (reinstall the
 latest build, confirm it stays connected past the ~9-14s mark that killed every previous attempt).
 Live-verify the audio sync fix and the echo fix against PC2/PC3 under genuine network pressure

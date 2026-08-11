@@ -45,8 +45,19 @@ public sealed class ScreenCaptureService : IDisposable
 
     /// <summary>Fires once per captured frame with JPEG-encoded bytes. The handler is awaited
     /// before the next frame is captured, so a slow subscriber (e.g. a slow network broadcast)
-    /// naturally back-pressures the capture rate instead of frames piling up in memory.</summary>
+    /// naturally back-pressures the capture rate instead of frames piling up in memory.
+    /// Not fired when <see cref="RawFrameCaptured"/> has a subscriber — raw mode replaces the
+    /// JPEG encode entirely.</summary>
     public event Func<byte[], Task>? FrameCaptured;
+
+    /// <summary>Raw-mode alternative to <see cref="FrameCaptured"/> for the H.264 pipeline:
+    /// fires with (tightly-packed top-down BGRA pixels, width, height), skipping the JPEG encode
+    /// completely — the video encoder wants raw pixels, and JPEG-ing them first would waste CPU
+    /// and quality. The pixel buffer is reused between frames (the handler is awaited before the
+    /// next capture), so handlers must consume it before returning, not store it.</summary>
+    public event Func<byte[], int, int, Task>? RawFrameCaptured;
+
+    private byte[]? _rawBuffer;
 
     /// <param name="targetWindow">If set, captures only this window (see <see cref="WindowEnumerator"/>
     /// for picking one). If null, captures the whole primary monitor.</param>
@@ -88,10 +99,23 @@ public sealed class ScreenCaptureService : IDisposable
 
             try
             {
-                var jpegBytes = _targetWindow is { } hwnd ? CaptureWindowAsJpeg(hwnd) : CaptureScreenAsJpeg();
-                if (jpegBytes is not null && FrameCaptured is not null)
+                if (RawFrameCaptured is { } rawHandler)
                 {
-                    await FrameCaptured.Invoke(jpegBytes);
+                    using var frame = _targetWindow is { } hwnd ? CaptureWindowBitmap(hwnd) : CaptureScreenBitmap();
+                    if (frame is not null)
+                    {
+                        using var scaled = ScaleDownIfNeeded(frame);
+                        var (buffer, width, height) = ExtractBgra(scaled);
+                        await rawHandler.Invoke(buffer, width, height);
+                    }
+                }
+                else
+                {
+                    var jpegBytes = _targetWindow is { } hwnd ? CaptureWindowAsJpeg(hwnd) : CaptureScreenAsJpeg();
+                    if (jpegBytes is not null && FrameCaptured is not null)
+                    {
+                        await FrameCaptured.Invoke(jpegBytes);
+                    }
                 }
             }
             catch
@@ -117,6 +141,61 @@ public sealed class ScreenCaptureService : IDisposable
 
     private byte[]? CaptureScreenAsJpeg()
     {
+        using var bitmap = CaptureScreenBitmap();
+        if (bitmap is null)
+        {
+            return null;
+        }
+
+        using var scaled = ScaleDownIfNeeded(bitmap);
+        return EncodeJpeg(scaled);
+    }
+
+    private byte[]? CaptureWindowAsJpeg(IntPtr hwnd)
+    {
+        using var bitmap = CaptureWindowBitmap(hwnd);
+        if (bitmap is null)
+        {
+            return null;
+        }
+
+        using var scaled = ScaleDownIfNeeded(bitmap);
+        return EncodeJpeg(scaled);
+    }
+
+    /// <summary>Copies a bitmap's pixels into a reused, tightly-packed top-down BGRA buffer.
+    /// GDI+'s Format32bppArgb is BGRA in memory on little-endian Windows — exactly what the
+    /// H.264 encoder's <c>-pix_fmt bgra</c> input expects, so no per-pixel conversion happens
+    /// here, only row copies (LockBits stride may exceed width*4).</summary>
+    private (byte[] Buffer, int Width, int Height) ExtractBgra(Bitmap bitmap)
+    {
+        var width = bitmap.Width;
+        var height = bitmap.Height;
+        var needed = width * 4 * height;
+        if (_rawBuffer is null || _rawBuffer.Length < needed)
+        {
+            _rawBuffer = new byte[needed];
+        }
+
+        var data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var rowBytes = width * 4;
+            for (var y = 0; y < height; y++)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, _rawBuffer, y * rowBytes, rowBytes);
+            }
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        return (_rawBuffer, width, height);
+    }
+
+    private Bitmap? CaptureScreenBitmap()
+    {
         var screenWidth = GetSystemMetrics(SmCxScreen);
         var screenHeight = GetSystemMetrics(SmCyScreen);
         if (screenWidth <= 0 || screenHeight <= 0)
@@ -124,7 +203,7 @@ public sealed class ScreenCaptureService : IDisposable
             return null;
         }
 
-        using var bitmap = new Bitmap(screenWidth, screenHeight, PixelFormat.Format32bppArgb);
+        var bitmap = new Bitmap(screenWidth, screenHeight, PixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))
         {
             var destHdc = graphics.GetHdc();
@@ -148,11 +227,10 @@ public sealed class ScreenCaptureService : IDisposable
             DrawCursor(graphics, offsetX: 0, offsetY: 0, clampWidth: screenWidth, clampHeight: screenHeight);
         }
 
-        using var scaled = ScaleDownIfNeeded(bitmap);
-        return EncodeJpeg(scaled);
+        return bitmap;
     }
 
-    private byte[]? CaptureWindowAsJpeg(IntPtr hwnd)
+    private Bitmap? CaptureWindowBitmap(IntPtr hwnd)
     {
         if (!IsWindow(hwnd) || !GetWindowRect(hwnd, out var rect))
         {
@@ -175,7 +253,7 @@ public sealed class ScreenCaptureService : IDisposable
             return null;
         }
 
-        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))
         {
             var destHdc = graphics.GetHdc();
@@ -201,14 +279,14 @@ public sealed class ScreenCaptureService : IDisposable
 
             if (!printed)
             {
+                bitmap.Dispose();
                 return null; // both attempts failed — skip this tick rather than send a blank frame
             }
 
             DrawCursor(graphics, offsetX: -rect.Left, offsetY: -rect.Top, clampWidth: width, clampHeight: height);
         }
 
-        using var scaled = ScaleDownIfNeeded(bitmap);
-        return EncodeJpeg(scaled);
+        return bitmap;
     }
 
     private byte[] EncodeJpeg(Bitmap bitmap)

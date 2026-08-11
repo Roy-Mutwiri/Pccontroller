@@ -59,15 +59,29 @@ document the limitation").
   PROGRESS.md) — the more reliable choice for a first working version. It's CPU-bound (slower,
   higher-latency than WGC) and won't correctly capture some exclusive-fullscreen DirectX content.
   Revisit WGC once there's a way to test the interop live.
-- **Bandwidth not yet tuned for real-world links — and deliberately less so now.** The user
-  explicitly asked for the highest possible quality/resolution on every node over bandwidth
-  concerns, so as of 2026-08-10 captures default to JPEG quality 100 (was 70) and up to 3840px/4K
-  uncapped (was 1280px) at a default 12 FPS. That's meaningfully more data per frame than before —
-  fine on a real LAN, but more likely to strain a constrained upload link when nodes connect over
-  Tailscale/WAN (as in this project's actual PC1↔PC2 setup) than the old, more conservative
-  defaults were. Frame rate, max dimension, and JPEG quality are all still editable per-capture in
-  the Properties panel (applying restarts that capture at the new settings) for anyone who
-  explicitly wants to trade quality back for bandwidth on a specific source.
+- **Video now streams as real H.264 when ffmpeg is available (2026-08-11), with automatic
+  JPEG-per-frame fallback when it isn't.** The original JPEG-per-frame design had no compression
+  between frames, which is why quality collapsed under real network bandwidth no matter how the
+  settings were tuned. The H.264 pipeline (see `TradeFix.Sources/Video` and PROGRESS.md) fixes
+  that architecturally. Caveats that remain by design:
+  - **ffmpeg.exe must ship next to Master/Agent** (Build-Distributable stages it; the installer
+    copies it). A machine without a *working* ffmpeg (`FfmpegLocator` actually executes the
+    candidate to check — file existence isn't enough under App Control) silently uses the JPEG
+    fallback: functional, but the old quality ceiling applies.
+  - **ffmpeg is GPL-licensed.** It ships as a separate executable invoked as a child process —
+    this does not extend GPL obligations to this codebase, but the distributed package does
+    contain a GPL binary; its source is available from the ffmpeg project.
+  - **Mixed versions don't interoperate for video**: an Agent from an older (JPEG-only) build
+    receiving an H.264 stream shows nothing for that source (it expects complete JPEGs).
+    Reinstall all PCs from the same package.
+  - **Brief picture corruption after heavy packet drops is expected, and self-heals at the next
+    keyframe (≤1s)**: H.264 chunks are consecutive ranges of one continuous stream, so a dropped
+    chunk (sustained overload only — `MediaHub` buffers bursts at depth 60 in this mode) garbles
+    the picture until the next keyframe, unlike JPEG mode where a drop just skipped a frame.
+- **Not yet live-verified across the real PC2/PC3 network** — built and verified with real
+  ffmpeg round-trip tests (pixel-checked) locally; the real-link behavior (quality holding at
+  high settings, restart markers on window resize, adaptive CRF stepping) still needs a
+  hands-on multi-PC session.
 - **No reconnect/backpressure handling on the media WebSocket** beyond what's built — a dropped
   media subscription reconnects only when the next full LOAD_SCENE arrives (e.g. on Agent
   reconnect), not automatically mid-session. Acceptable for a first version; worth revisiting if

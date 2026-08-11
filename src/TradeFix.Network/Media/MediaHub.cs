@@ -27,14 +27,22 @@ namespace TradeFix.Network.Media;
 /// <c>AdaptiveEncodingController</c> can step quality/resolution down automatically instead of a
 /// subscriber just perpetually missing frames at a fixed high data rate.
 /// </summary>
-public sealed class MediaHub(ILogSink? log = null)
+/// <param name="subscriberQueueDepth">How many unsent messages a subscriber's queue holds before
+/// the oldest is dropped. 1 (the default) is correct for independent-frame payloads (JPEG, audio
+/// chunks): only the newest matters. The H.264 video pipeline passes a deeper queue instead,
+/// because its messages are consecutive byte ranges of ONE continuous compressed stream — dropping
+/// any of them corrupts the picture until the next keyframe, so short send bursts should be
+/// absorbed rather than dropped. Sustained overload still drops (and still fires
+/// <see cref="FrameDropped"/> to drive adaptive quality); the corruption then self-heals at the
+/// next keyframe (≤1s).</param>
+public sealed class MediaHub(ILogSink? log = null, int subscriberQueueDepth = 1)
 {
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<WebSocket, SubscriberPump>> _subscribers = new();
 
     public void RegisterSubscriber(string sourceId, WebSocket socket)
     {
         var set = _subscribers.GetOrAdd(sourceId, _ => new ConcurrentDictionary<WebSocket, SubscriberPump>());
-        set[socket] = new SubscriberPump(socket, log, sourceId, () => RemoveSubscriber(sourceId, socket));
+        set[socket] = new SubscriberPump(socket, subscriberQueueDepth, log, sourceId, () => RemoveSubscriber(sourceId, socket));
     }
 
     public void RemoveSubscriber(string sourceId, WebSocket socket)
@@ -85,14 +93,17 @@ public sealed class MediaHub(ILogSink? log = null)
     private sealed class SubscriberPump
     {
         private readonly WebSocket _socket;
-        private readonly Channel<ReadOnlyMemory<byte>> _channel = Channel.CreateBounded<ReadOnlyMemory<byte>>(
-            new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true, SingleWriter = false });
+        private readonly int _queueDepth;
+        private readonly Channel<ReadOnlyMemory<byte>> _channel;
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _pumpTask;
 
-        public SubscriberPump(WebSocket socket, ILogSink? log, string sourceId, Action onDead)
+        public SubscriberPump(WebSocket socket, int queueDepth, ILogSink? log, string sourceId, Action onDead)
         {
             _socket = socket;
+            _queueDepth = Math.Max(1, queueDepth);
+            _channel = Channel.CreateBounded<ReadOnlyMemory<byte>>(
+                new BoundedChannelOptions(_queueDepth) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true, SingleWriter = false });
             _pumpTask = Task.Run(() => PumpAsync(log, sourceId, onDead));
         }
 
@@ -100,7 +111,7 @@ public sealed class MediaHub(ILogSink? log = null)
         /// subscriber is falling behind at the current data rate).</returns>
         public bool Post(ReadOnlyMemory<byte> frame)
         {
-            var droppingExisting = _channel.Reader.Count > 0;
+            var droppingExisting = _channel.Reader.Count >= _queueDepth;
             _channel.Writer.TryWrite(frame);
             return droppingExisting;
         }

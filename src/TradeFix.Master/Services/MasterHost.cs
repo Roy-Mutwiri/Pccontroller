@@ -19,6 +19,7 @@ using TradeFix.Shared.Enums;
 using TradeFix.Shared.Models;
 using TradeFix.Sources.Audio;
 using TradeFix.Sources.Capture;
+using TradeFix.Sources.Video;
 
 namespace TradeFix.Master.Services;
 
@@ -35,6 +36,16 @@ public sealed class MasterHost : IAsyncDisposable
     private readonly object _dirtyLock = new();
     private readonly Dictionary<string, SourceDefinition> _dirtyTransforms = new();
     private readonly Dictionary<string, ScreenCaptureService> _activeCaptures = new();
+
+    /// <summary>One H.264 encoder per capture source when ffmpeg is available (see
+    /// <see cref="StartCapture"/> — the quality fix that replaced JPEG-per-frame). Null entries
+    /// never exist; sources running the JPEG fallback simply aren't in this dictionary.</summary>
+    private readonly Dictionary<string, H264VideoEncoder> _activeEncoders = new();
+
+    /// <summary>Set when an encoder gives up mid-run (ffmpeg dying repeatedly) — from then on
+    /// every capture (re)start uses the JPEG fallback instead of burning a broken ffmpeg per
+    /// source. Never reset within a run; ffmpeg doesn't come back mid-session.</summary>
+    private bool _ffmpegBroken;
 
     /// <summary>WASAPI loopback captures the *entire* system output, not the individual app being
     /// captured — so if two capture sources each had audio enabled, the old code (one
@@ -96,7 +107,14 @@ public sealed class MasterHost : IAsyncDisposable
         var pairingCodes = new PairingCodeRepository(dbFactory);
         Pairing = new PairingService(pairingCodes);
         Assets = new AssetStore(Path.Combine(AppPaths.DataRoot("Master"), "assets"));
-        MediaHub = new MediaHub(Log);
+        // Video queue depth 60 in H.264 mode vs 1 otherwise: H.264 messages are consecutive
+        // ranges of one continuous stream (drops corrupt the picture until the next keyframe),
+        // so short send bursts should be absorbed — and at H.264 bitrates 60 queued chunks is
+        // small. In JPEG mode depth must stay 1 (latest-frame-wins): queueing full JPEG frames
+        // behind a slow link is exactly the ever-growing-lag bug MediaHub was built to fix.
+        // Audio stays at 1 always — chunks are independent and timestamped, and the Agent's
+        // AudioSyncGapFiller silence-fills any drop.
+        MediaHub = new MediaHub(Log, subscriberQueueDepth: FfmpegLocator.Find() is not null ? 60 : 1);
         AudioHub = new MediaHub(Log);
 
         Server = new MasterServer(Registry, pairedNodes, pairingCodes, settings.ServerName, AppVersion, Log, Assets, MediaHub, AudioHub);
@@ -400,16 +418,93 @@ public sealed class MasterHost : IAsyncDisposable
 
     private void StartCapture(string sourceId, IntPtr? targetWindow, int fps, int maxDimension, int quality)
     {
+        StopEncoder(sourceId);
+
         var capture = new ScreenCaptureService(fps, maxDimension, targetWindow, quality);
-        capture.FrameCaptured += bytes =>
+        var ffmpegPath = _ffmpegBroken ? null : FfmpegLocator.Find();
+
+        if (ffmpegPath is not null)
         {
-            // Master already has these bytes in-process — no need to round-trip through its own
-            // MediaHub/WebSocket to preview what it's sending, unlike a remote node.
-            LocalCaptureFrame?.Invoke(sourceId, bytes);
-            return MediaHub.BroadcastFrameAsync(sourceId, bytes, CancellationToken.None);
-        };
+            // H.264 mode (the quality fix): raw frames → ffmpeg → compressed stream chunks.
+            // Roughly an order of magnitude better quality per byte than the JPEG-per-frame
+            // fallback below, because H.264 only spends bits on what changed between frames.
+            var encoder = new H264VideoEncoder(ffmpegPath, fps, MapQualityToCrf(quality));
+            encoder.EncodedDataAvailable += chunk =>
+                _ = MediaHub.BroadcastFrameAsync(sourceId, chunk, CancellationToken.None);
+            encoder.StreamRestarted += () =>
+                _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None);
+            encoder.Failed += () =>
+            {
+                Log.Write(LogCategory.Error, "MasterHost",
+                    $"H.264 encoder for {sourceId} failed repeatedly — falling back to JPEG for all captures");
+                _ffmpegBroken = true;
+                // Restart from outside the capture loop's own frame callback.
+                _ = Task.Run(() => RestartCaptureWithCurrentSettings(sourceId));
+            };
+            _activeEncoders[sourceId] = encoder;
+
+            // A (re)connecting stream is always a fresh sequence — tell existing subscribers to
+            // reset their decoders (no-op when there are none, e.g. a brand-new source).
+            _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None);
+
+            var previewInterval = Math.Max(1, fps / 5);
+            var frameCounter = 0;
+            capture.RawFrameCaptured += async (bgra, width, height) =>
+            {
+                // Self-preview at ~5fps: there's no JPEG anywhere in this pipeline to reuse, and
+                // BMP-wrapping every raw frame for the local canvas would be pure memcpy waste.
+                if (LocalCaptureFrame is not null && frameCounter++ % previewInterval == 0)
+                {
+                    LocalCaptureFrame.Invoke(sourceId, BgraBmp.Encode(bgra, width, height));
+                }
+
+                await encoder.WriteFrameAsync(bgra, width, height, CancellationToken.None);
+            };
+        }
+        else
+        {
+            capture.FrameCaptured += bytes =>
+            {
+                // Master already has these bytes in-process — no need to round-trip through its
+                // own MediaHub/WebSocket to preview what it's sending, unlike a remote node.
+                LocalCaptureFrame?.Invoke(sourceId, bytes);
+                return MediaHub.BroadcastFrameAsync(sourceId, bytes, CancellationToken.None);
+            };
+        }
+
         _activeCaptures[sourceId] = capture;
         capture.Start();
+    }
+
+    /// <summary>Maps the user-facing 1-100 quality setting onto x264's CRF scale (lower = better):
+    /// 100 → 16 (near-visually-lossless), 70 → 24, 40 → 32. The same setting the adaptive
+    /// controller steps under network pressure keeps working in H.264 mode — it just moves CRF
+    /// instead of JPEG quantization now.</summary>
+    private static int MapQualityToCrf(int quality) =>
+        Math.Clamp(16 + (100 - quality) * 16 / 60, 16, 36);
+
+    private void RestartCaptureWithCurrentSettings(string sourceId)
+    {
+        if (!_activeCaptures.TryGetValue(sourceId, out var existing))
+        {
+            return;
+        }
+
+        var targetWindow = existing.TargetWindow;
+        var fps = existing.TargetFps;
+        var maxDimension = existing.MaxDimension;
+        var quality = existing.Quality;
+        existing.Stop();
+        existing.Dispose();
+        StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
+    }
+
+    private void StopEncoder(string sourceId)
+    {
+        if (_activeEncoders.Remove(sourceId, out var encoder))
+        {
+            encoder.Dispose();
+        }
     }
 
     private void StartAudioCapture(string sourceId)
@@ -449,6 +544,7 @@ public sealed class MasterHost : IAsyncDisposable
             Log.Write(LogCategory.Media, "MasterHost", $"Stopped screen capture for source {sourceId}");
         }
 
+        StopEncoder(sourceId);
         StopAudioCapture(sourceId);
 
         lock (_adaptiveLock)
@@ -477,6 +573,13 @@ public sealed class MasterHost : IAsyncDisposable
             capture.Stop();
             capture.Dispose();
         }
+
+        foreach (var encoder in _activeEncoders.Values)
+        {
+            encoder.Dispose();
+        }
+
+        _activeEncoders.Clear();
 
         _sharedAudioCapture?.Stop();
         _sharedAudioCapture?.Dispose();

@@ -13,6 +13,7 @@ using TradeFix.Protocol;
 using TradeFix.Protocol.Messages;
 using TradeFix.Shared.Enums;
 using TradeFix.Shared.Models;
+using TradeFix.Sources.Video;
 
 namespace TradeFix.Agent.Services;
 
@@ -233,6 +234,14 @@ public sealed class AgentHost : IAsyncDisposable
 
         Log.Write(LogCategory.Media, "AgentHost", $"Media subscription connected for {sourceId}");
 
+        // Per-message routing (see H264StreamProtocol): a restart marker resets the decoder, a
+        // complete JPEG goes straight to display (the fallback pipeline, unchanged), anything
+        // else is a chunk of the continuous H.264 stream. Decoded H.264 frames arrive as BMPs and
+        // flow through the *same* LiveFrameReceived display path as JPEGs — the renderer's
+        // decoder auto-detects the format.
+        H264VideoDecoder? decoder = null;
+        var loggedNoFfmpeg = false;
+
         var buffer = new byte[64 * 1024];
         try
         {
@@ -252,7 +261,56 @@ public sealed class AgentHost : IAsyncDisposable
                 }
                 while (!result.EndOfMessage);
 
-                LiveFrameReceived?.Invoke(sourceId, frame.ToArray());
+                var message = frame.ToArray();
+
+                if (H264StreamProtocol.IsRestartMarker(message))
+                {
+                    decoder?.Dispose();
+                    decoder = null;
+                    continue;
+                }
+
+                if (H264StreamProtocol.IsCompleteJpeg(message))
+                {
+                    LiveFrameReceived?.Invoke(sourceId, message);
+                    continue;
+                }
+
+                if (decoder is null)
+                {
+                    var ffmpegPath = FfmpegLocator.Find();
+                    if (ffmpegPath is null)
+                    {
+                        if (!loggedNoFfmpeg)
+                        {
+                            loggedNoFfmpeg = true;
+                            Log.Write(LogCategory.Error, "AgentHost",
+                                $"Master is sending H.264 video for {sourceId} but ffmpeg isn't available on this node — video disabled for this source (reinstall from the current package to get ffmpeg)");
+                        }
+
+                        continue;
+                    }
+
+                    decoder = new H264VideoDecoder(ffmpegPath);
+                    decoder.FrameDecoded += bmp => LiveFrameReceived?.Invoke(sourceId, bmp);
+                }
+
+                try
+                {
+                    await decoder.WriteAsync(message, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // Decoder process died — tear it down; the next chunk recreates it and the
+                    // picture recovers at the next keyframe (≤1s).
+                    Log.Write(LogCategory.Error, "AgentHost", $"H.264 decoder for {sourceId} failed — restarting it", ex);
+                    decoder.Dispose();
+                    decoder = null;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -262,6 +320,10 @@ public sealed class AgentHost : IAsyncDisposable
         catch (Exception ex)
         {
             Log.Write(LogCategory.Error, "AgentHost", $"Media subscription for {sourceId} dropped", ex);
+        }
+        finally
+        {
+            decoder?.Dispose();
         }
     }
 
