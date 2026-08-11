@@ -139,59 +139,22 @@ public static class Installer
         }
     }
 
-    /// <summary>Creating a shortcut goes through the IShellLinkW COM object, which — like most
-    /// shell COM interfaces — requires an STA thread. This is called from <see cref="Install"/>,
-    /// which callers commonly run via <c>Task.Run</c> (a thread-pool/MTA thread) to keep the UI
-    /// responsive during file copying — so this specific step is marshaled onto a dedicated STA
-    /// thread regardless of which thread <see cref="CreateShortcuts"/> itself was called from.
-    /// Skipping this was a real bug found during end-to-end testing: it crashed the whole process
-    /// with an unhandled COM exception the very first time this ran outside a test host (xUnit's
-    /// test runner happened to use an STA thread for this project's test collection, masking the
-    /// bug in <c>InstallerTests</c> — a good reminder that "the unit test passed" isn't the same
-    /// guarantee as "the real app doesn't crash" when thread apartment state is involved).</summary>
     /// <param name="startMenuProgramsDir">Defaults to the real Start Menu Programs folder —
     /// overridable so tests can verify this without touching the real user's Start Menu.</param>
     /// <param name="desktopDir">Defaults to the real Desktop — same reasoning.</param>
     public static void CreateShortcuts(string installRoot, string? startMenuProgramsDir = null, string? desktopDir = null)
     {
-        RunOnStaThread(() =>
-        {
-            var launcherExe = Path.Combine(installRoot, "Launcher", "TradeFix.Launcher.exe");
-            var workingDir = Path.GetDirectoryName(launcherExe)!;
+        var launcherExe = Path.Combine(installRoot, "Launcher", "TradeFix.Launcher.exe");
+        var workingDir = Path.GetDirectoryName(launcherExe)!;
 
-            var startMenu = startMenuProgramsDir ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Windows\Start Menu\Programs");
-            Directory.CreateDirectory(startMenu);
-            ShortcutCreator.Create(Path.Combine(startMenu, "TradeFix Broadcast.lnk"), launcherExe, workingDir, DisplayName);
+        var startMenu = startMenuProgramsDir ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Windows\Start Menu\Programs");
+        Directory.CreateDirectory(startMenu);
+        ShortcutCreator.Create(Path.Combine(startMenu, "TradeFix Broadcast.lnk"), launcherExe, workingDir, DisplayName);
 
-            var desktop = desktopDir ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            Directory.CreateDirectory(desktop);
-            ShortcutCreator.Create(Path.Combine(desktop, "TradeFix Broadcast.lnk"), launcherExe, workingDir, DisplayName);
-        });
-    }
-
-    private static void RunOnStaThread(Action action)
-    {
-        Exception? error = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                action();
-            }
-            catch (Exception ex)
-            {
-                error = ex;
-            }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
-
-        if (error is not null)
-        {
-            throw new InvalidOperationException("Shortcut creation failed.", error);
-        }
+        var desktop = desktopDir ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+        Directory.CreateDirectory(desktop);
+        ShortcutCreator.Create(Path.Combine(desktop, "TradeFix Broadcast.lnk"), launcherExe, workingDir, DisplayName);
     }
 
     public static void RemoveShortcuts()

@@ -128,6 +128,27 @@ document the limitation").
   itself doesn't restrict the scheme (the test suite uses `file://` URLs for a fully offline,
   deterministic test page), that validation exists only in the UI layer for user-facing input.
 
+## Installer — TradeFix.Setup.exe not yet live-verified
+
+- **The compiled one-click installer (`TradeFix.Setup.exe`) has not been confirmed to run cleanly
+  in this project's dev sandbox**, despite thorough unit testing (77/77 passing, including real
+  filesystem/registry checks) and careful code review. During end-to-end testing here, published
+  builds would intermittently exit 10-28 seconds after launch with no window ever shown, no
+  catchable managed exception, and no consistent Windows Event Log signature — behavior most
+  consistent with some form of security/behavioral scanning specific to this sandbox reacting to a
+  newly-built, frequently-rebuilt, unsigned, native-code-extracting single-file exe, rather than a
+  defect in the shipped code (see PROGRESS.md's installer section for the full diagnostic trail,
+  including things that were ruled out). **This sandbox is explicitly confirmed to not be one of
+  the actual target PCs** this software runs on (see the WDAC section below) — but until
+  `TradeFix.Setup.exe` is verified on a real target machine, use
+  `installer\Install-TradeFixBroadcast.bat` (the PowerShell-based installer), which *has* been
+  verified end-to-end in this same sandbox, including a full install → real launch → uninstall
+  cycle with all side effects checked directly (files, shortcuts, registry, running processes).
+- **If you see a "Could not find Master\TradeFix.Master.exe" (or Agent) popup from the Launcher**,
+  it means the install that put the Launcher there didn't finish copying Master/Agent into the
+  sibling folders it expects — almost always because whatever installer was used didn't complete
+  successfully. Reinstall using `Install-TradeFixBroadcast.bat` to get a known-complete install.
+
 ## Output (Phase 8 — not started)
 
 - **No TikTok integration exists, and none is planned against undocumented APIs** (spec section

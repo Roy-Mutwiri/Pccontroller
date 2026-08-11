@@ -33,10 +33,10 @@ public partial class MainWindow : Window
 
         // This is called from a "Loaded += async (_, _) => ..." event handler, which behaves like
         // async void: an exception escaping here can't be caught by any caller and crashes the
-        // whole process with no visible explanation to the operator — exactly what happened during
-        // real end-to-end testing (a COM apartment-threading bug in shortcut creation, since fixed
-        // in Installer.CreateShortcuts, but this try/catch stays as defense-in-depth against
-        // whatever the next unexpected failure turns out to be).
+        // whole process with no visible explanation to the operator. This try/catch, plus
+        // App.xaml.cs's AppDomain/DispatcherUnhandledException handlers, are defense-in-depth so a
+        // real installer failure always shows the operator something instead of the process just
+        // vanishing (which is exactly what made an earlier bug in this file so hard to diagnose).
         try
         {
             var outcome = await Task.Run(() => _isUninstall ? Installer.Uninstall(Log) : Installer.Install(Log));

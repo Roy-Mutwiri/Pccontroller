@@ -126,14 +126,14 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public async Task CreateShortcuts_DoesNotCrash_WhenCalledFromAThreadPoolContext()
     {
-        // Regression test for a real crash caught during end-to-end testing: Installer.Install()
-        // is meant to be called via Task.Run (a thread-pool/MTA thread) to keep the setup UI
-        // responsive during file copying, but IShellLinkW COM shortcut creation requires an STA
-        // thread — calling it from MTA crashed the whole process with an unhandled COM exception
-        // the first time this ran outside a test host. xUnit's own test execution context happened
-        // to mask this for a direct call (its threads are commonly STA for this kind of project),
-        // so this test deliberately forces the MTA thread-pool context that actually broke,
-        // via Task.Run, rather than calling CreateShortcuts directly.
+        // Installer.Install() is meant to be called via Task.Run (a thread-pool thread) to keep
+        // the setup UI responsive during file copying, so this forces that same context rather
+        // than calling CreateShortcuts directly from the test's own thread. Originally written
+        // when ShortcutCreator used in-process COM interop (which genuinely did crash the real
+        // published exe on startup — see ShortcutCreator's remarks for the full story of why it
+        // now shells out to PowerShell instead). Kept as regression coverage even after that
+        // rewrite, since "works fine from a background thread" is still a real property worth
+        // guaranteeing regardless of the underlying mechanism.
         var launcherDir = Path.Combine(_root, "installed", "Launcher");
         Directory.CreateDirectory(launcherDir);
         File.WriteAllText(Path.Combine(launcherDir, "TradeFix.Launcher.exe"), "stub");

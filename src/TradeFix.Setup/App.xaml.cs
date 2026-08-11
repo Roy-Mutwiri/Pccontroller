@@ -11,11 +11,12 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Belt-and-suspenders: if something ever throws in a way MainWindow's own try/catch can't
+        // reach (e.g. during window construction itself, before that try/catch even exists yet),
+        // this at least leaves a trace at %TEMP%\tfsetup-crash.txt an operator could send along
+        // when reporting a setup failure, instead of the process just silently vanishing.
         AppDomain.CurrentDomain.UnhandledException += (_, args) => LogCrash("AppDomain.UnhandledException", args.ExceptionObject as Exception);
-        DispatcherUnhandledException += (_, args) =>
-        {
-            LogCrash("DispatcherUnhandledException", args.Exception);
-        };
+        DispatcherUnhandledException += (_, args) => LogCrash("DispatcherUnhandledException", args.Exception);
 
         base.OnStartup(e);
 

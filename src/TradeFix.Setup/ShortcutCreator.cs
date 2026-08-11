@@ -1,60 +1,65 @@
-using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.IO;
 
 namespace TradeFix.Setup;
 
-/// <summary>Creates a real Windows .lnk shortcut via the standard IShellLink/IPersistFile COM
-/// interop pattern — no NuGet dependency needed for something this small and well-documented,
-/// consistent with the rest of this project's preference for direct P/Invoke over extra packages
-/// (see ScreenCaptureService, AudioCaptureService).</summary>
+/// <summary>
+/// Creates a real Windows .lnk shortcut by shelling out to PowerShell's WScript.Shell COM object,
+/// rather than using classic in-process [ComImport]/Type.GetTypeFromCLSID COM interop.
+///
+/// The in-process approach was the original implementation and worked fine under `dotnet build`/
+/// `dotnet run`, but crashed the published self-contained single-file exe on startup — before any
+/// window even appeared, and without a catchable managed exception (a native
+/// STATUS_FATAL_USER_CALLBACK_EXCEPTION). Confirmed via isolation testing: removing the COM
+/// interop types from the assembly entirely made the crash disappear, even though that code path
+/// was never executed before the crash — the mere presence of classic COM interop types was
+/// enough. This matches a documented, real .NET limitation: built-in COM interop relies on
+/// generating an IL stub at runtime, which doesn't reliably work in every self-contained
+/// single-file publish configuration (the fully-correct fix is source-generated COM interop via
+/// [GeneratedComInterface]/ComWrappers, but that's substantially more code for one shortcut call).
+/// Shelling out to powershell.exe sidesteps the whole problem: it's a separate, already-COM-capable
+/// process, and this is the exact mechanism the project's earlier PowerShell-based installer
+/// (installer/Install-TradeFixBroadcast.ps1) already used successfully.
+/// </summary>
 public static class ShortcutCreator
 {
     public static void Create(string shortcutPath, string targetPath, string workingDirectory, string description)
     {
-        var shellLinkType = Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"))!;
-        var shellLink = (IShellLinkW)Activator.CreateInstance(shellLinkType)!;
+        var script =
+            $"$shell = New-Object -ComObject WScript.Shell; " +
+            $"$shortcut = $shell.CreateShortcut('{Escape(shortcutPath)}'); " +
+            $"$shortcut.TargetPath = '{Escape(targetPath)}'; " +
+            $"$shortcut.WorkingDirectory = '{Escape(workingDirectory)}'; " +
+            $"$shortcut.Description = '{Escape(description)}'; " +
+            $"$shortcut.Save()";
 
-        shellLink.SetPath(targetPath);
-        shellLink.SetWorkingDirectory(workingDirectory);
-        shellLink.SetDescription(description);
+        var startInfo = new ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-Command");
+        startInfo.ArgumentList.Add(script);
 
-        ((IPersistFile)shellLink).Save(shortcutPath, false);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start powershell.exe to create a shortcut.");
+        var stderr = process.StandardError.ReadToEnd();
+        if (!process.WaitForExit(15000))
+        {
+            process.Kill();
+            throw new TimeoutException($"Creating shortcut '{shortcutPath}' via PowerShell timed out.");
+        }
+
+        if (process.ExitCode != 0 || !File.Exists(shortcutPath))
+        {
+            throw new InvalidOperationException($"Failed to create shortcut '{shortcutPath}': {stderr}");
+        }
     }
 
-    [ComImport]
-    [Guid("000214F9-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IShellLinkW
-    {
-        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszFile, int cchMaxPath, IntPtr pfd, uint fFlags);
-        void GetIDList(out IntPtr ppidl);
-        void SetIDList(IntPtr pidl);
-        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszName, int cchMaxName);
-        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszDir, int cchMaxPath);
-        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
-        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszArgs, int cchMaxPath);
-        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
-        void GetHotkey(out short pwHotkey);
-        void SetHotkey(short wHotkey);
-        void GetShowCmd(out int piShowCmd);
-        void SetShowCmd(int iShowCmd);
-        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszIconPath, int cchIconPath, out int piIcon);
-        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
-        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
-        void Resolve(IntPtr hwnd, uint fFlags);
-        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
-    }
-
-    [ComImport]
-    [Guid("0000010b-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IPersistFile
-    {
-        void GetClassID(out Guid pClassID);
-        void IsDirty();
-        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
-        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
-        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
-        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
-    }
+    private static string Escape(string value) => value.Replace("'", "''");
 }

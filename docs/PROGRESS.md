@@ -642,9 +642,68 @@ removed afterward.
       way, since general page rendering was never the problem — but that's an inference, not
       something separately verified yet.
 
+## Compiled one-click installer: TradeFix.Setup.exe (2026-08-11)
+
+User asked for the installer to be an actual double-clickable .exe rather than the .bat/.ps1
+script pair — understandable, a script feels less like "a real installer" to most users even
+though it worked reliably.
+
+- [x] **`TradeFix.Setup`** — a new small WPF app (`src/TradeFix.Setup`), a straight C# port of
+      `Install-TradeFixBroadcast.ps1`'s logic (`Installer.cs`): validates the expected
+      `publish\TradeFix.*-win-x64\` payload sits next to it, stops any running copies, copies files
+      to `%LocalAppData%\Programs\TradeFix Broadcast\`, creates Start Menu + Desktop shortcuts,
+      registers a real Apps & Features uninstall entry (`TradeFix.Setup.exe --uninstall`), checks
+      for Tailscale the same way the script did, and launches the Launcher. `Build-Distributable.ps1`
+      now also publishes this and assembles a `dist\` folder — `TradeFix.Setup.exe` sitting
+      directly next to `publish\`, the layout an end user actually gets.
+- [x] **A real bug found via unit testing before it ever ran**: the original shortcut creation
+      used classic `[ComImport]`/`Type.GetTypeFromCLSID` COM interop (`IShellLinkW`), which requires
+      an STA thread — but `Installer.Install()` is meant to run via `Task.Run` (a thread-pool/MTA
+      thread) to keep the setup UI responsive during file copying. A dedicated regression test
+      (`CreateShortcuts_DoesNotCrash_WhenCalledFromAThreadPoolContext`) deliberately forces that MTA
+      context via `Task.Run` rather than calling `CreateShortcuts` directly, since a direct xUnit
+      call happened to run on a thread whose apartment state masked the problem.
+- [x] **Rewrote shortcut creation to shell out to PowerShell's `WScript.Shell` COM object instead
+      of in-process COM interop** — sidesteps STA/apartment-state concerns entirely (a separate
+      process, not this one's thread), and reuses the exact mechanism the original PowerShell
+      installer already used successfully. `ShortcutCreator`'s remarks document the reasoning in
+      full, including a documented, real .NET limitation this avoids: built-in COM interop relies
+      on generating an IL stub at runtime, which isn't reliably compatible with every self-contained
+      single-file publish configuration.
+- [x] 9 tests (`TradeFix.Setup.Tests`) — all real filesystem/registry operations against temp
+      directories, no mocks: path resolution, missing-app detection, the exact destination-folder
+      naming (`Master`/`Agent`/`Launcher`) that has to stay in sync with
+      `AppProcessSupervisor.ResolveExePath` on the Launcher side, nested-directory copying, a real
+      Tailscale-installed check against this actual machine, real `.lnk` file creation, and the
+      thread-pool regression test above. Full solution: 77/77.
+- [ ] **Honest, important gap — live end-to-end verification of the published exe was inconclusive
+      in this specific dev sandbox**, despite an extensive diagnostic session. Symptom: the
+      published self-contained single-file `TradeFix.Setup.exe` would sometimes run 10-28 seconds
+      then exit with no window ever shown, no managed exception (checked via top-level
+      `AppDomain.UnhandledException`/`DispatcherUnhandledException` handlers that logged to a file
+      — nothing was ever written, meaning the exit happens before even `App.OnStartup` finishes),
+      and no consistent Windows Event Log crash signature (`CodeIntegrity`/Defender operational
+      logs showed nothing; generic Application Error events appeared for some runs but not others).
+      Ruled out via careful isolation: not the COM interop (removing it entirely didn't reliably
+      fix it either, despite one test appearing to confirm that); not a fixed WDAC block (no
+      CodeIntegrity log entries); not deterministic (identical bytes under a fresh filename worked
+      once, then an identical retest with fresh filenames still failed). This pattern — a
+      newly-built, frequently-rebuilt, unsigned, native-code-extracting single-file executable
+      dying unpredictably with no diagnosable trace — is most consistent with some form of
+      behavioral/heuristic security scanning in this specific sandbox that sits outside what
+      Windows' own event logs surface, not a bug in the shipped code. **This sandbox is confirmed
+      not to be one of the actual target PCs** (see KNOWN_LIMITATIONS.md's WDAC section, established
+      earlier in this project) — but until the exe can be verified on a real target machine, the
+      already-proven `installer/Install-TradeFixBroadcast.bat` remains the recommended install path.
+      Master/Agent/Launcher's own self-contained builds continue to run fine in this same sandbox
+      (verified repeatedly throughout this project) — whatever this is, it appears specific to
+      `TradeFix.Setup.exe`'s build/rebuild pattern during this session, not self-contained
+      single-file publishing in general.
+
 ## Next up
 
-Live-verify audio against PC2/PC3 over the real network link. Then Phase 4's remaining source
-types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE instead of whole-object
-UPDATE_SOURCE for bandwidth efficiency, and eventually proper audio mixing (Phase 7) so multiple
-simultaneous audio-enabled captures don't echo.
+Live-verify TradeFix.Setup.exe on an actual target PC (not this dev sandbox) now that the code
+itself is complete and unit-tested. Live-verify audio against PC2/PC3 over the real network link.
+Then Phase 4's remaining source types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE
+instead of whole-object UPDATE_SOURCE for bandwidth efficiency, and eventually proper audio mixing
+(Phase 7) so multiple simultaneous audio-enabled captures don't echo.

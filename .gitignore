@@ -190,6 +190,7 @@ publish/
 
 # Assembled installer package (see installer/Build-Distributable.ps1) — build output, not source
 dist/
+dist-*/
 
 # Publish Web Output
 *.[Pp]ublish.xml
