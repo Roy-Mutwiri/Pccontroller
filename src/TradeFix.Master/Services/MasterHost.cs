@@ -35,7 +35,20 @@ public sealed class MasterHost : IAsyncDisposable
     private readonly object _dirtyLock = new();
     private readonly Dictionary<string, SourceDefinition> _dirtyTransforms = new();
     private readonly Dictionary<string, ScreenCaptureService> _activeCaptures = new();
-    private readonly Dictionary<string, AudioCaptureService> _activeAudioCaptures = new();
+
+    /// <summary>WASAPI loopback captures the *entire* system output, not the individual app being
+    /// captured — so if two capture sources each had audio enabled, the old code (one
+    /// AudioCaptureService per source) started two independent loopbacks of the identical signal
+    /// and sent them to nodes as two unsynchronized streams, which nodes then played through two
+    /// separate WaveOutEvent players. Two copies of the same audio, drifting out of phase, is
+    /// exactly what an operator hears as an echo. Fixed by sharing one capture across every source
+    /// that wants audio (ref-counted by <see cref="_audioEnabledSources"/>) and broadcasting it on
+    /// one well-known channel — see <see cref="SharedAudioSourceId"/> and AgentHost's matching
+    /// single subscription.</summary>
+    private const string SharedAudioSourceId = "desktop-audio";
+    private readonly HashSet<string> _audioEnabledSources = new();
+    private AudioCaptureService? _sharedAudioCapture;
+
     private readonly object _adaptiveLock = new();
     private readonly Dictionary<string, AdaptiveEncodingController> _adaptiveControllers = new();
 
@@ -401,20 +414,29 @@ public sealed class MasterHost : IAsyncDisposable
 
     private void StartAudioCapture(string sourceId)
     {
+        _audioEnabledSources.Add(sourceId);
+        if (_sharedAudioCapture is not null)
+        {
+            return; // already running for another source — every source hears the same desktop audio
+        }
+
         var audioCapture = new AudioCaptureService();
         audioCapture.ChunkCaptured += (bytes, timestampMs) =>
-            AudioHub.BroadcastFrameAsync(sourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
-        _activeAudioCaptures[sourceId] = audioCapture;
+            AudioHub.BroadcastFrameAsync(SharedAudioSourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
+        _sharedAudioCapture = audioCapture;
         audioCapture.Start();
     }
 
     private void StopAudioCapture(string sourceId)
     {
-        if (_activeAudioCaptures.Remove(sourceId, out var audioCapture))
+        if (!_audioEnabledSources.Remove(sourceId) || _audioEnabledSources.Count > 0)
         {
-            audioCapture.Stop();
-            audioCapture.Dispose();
+            return; // other sources still want audio — keep the shared capture running
         }
+
+        _sharedAudioCapture?.Stop();
+        _sharedAudioCapture?.Dispose();
+        _sharedAudioCapture = null;
     }
 
     /// <summary>Removes a source, stopping any live capture (video and audio) it owns first.</summary>
@@ -456,11 +478,10 @@ public sealed class MasterHost : IAsyncDisposable
             capture.Dispose();
         }
 
-        foreach (var audioCapture in _activeAudioCaptures.Values)
-        {
-            audioCapture.Stop();
-            audioCapture.Dispose();
-        }
+        _sharedAudioCapture?.Stop();
+        _sharedAudioCapture?.Dispose();
+        _sharedAudioCapture = null;
+        _audioEnabledSources.Clear();
 
         foreach (var simulator in _simulators)
         {

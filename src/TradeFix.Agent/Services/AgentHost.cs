@@ -23,10 +23,19 @@ public sealed class AgentHost : IAsyncDisposable
 
     private static readonly WaveFormat AudioFormat = new(24000, 16, 1);
 
+    /// <summary>Must match MasterHost.SharedAudioSourceId. Master merges every audio-enabled
+    /// capture source into one desktop-audio loopback instead of one capture per source (WASAPI
+    /// loopback captures the whole system output regardless of which app is targeted, so N
+    /// per-source streams were always N copies of the identical signal) — that's what caused the
+    /// audible echo nodes used to hear when more than one capture had audio on: two unsynchronized
+    /// copies of the same audio, played through two separate players. One shared channel, one
+    /// subscription, one player, regardless of how many sources have audio enabled.</summary>
+    private const string SharedAudioSourceId = "desktop-audio";
+
     private readonly HttpClient _httpClient = new();
     private readonly Dictionary<string, CancellationTokenSource> _liveSubscriptions = new();
-    private readonly Dictionary<string, CancellationTokenSource> _audioSubscriptions = new();
-    private readonly Dictionary<string, (WaveOutEvent Player, BufferedWaveProvider Buffer)> _audioPlayers = new();
+    private CancellationTokenSource? _audioSubscription;
+    private (WaveOutEvent Player, BufferedWaveProvider Buffer)? _audioPlayer;
 
     public AgentSettings Settings { get; private set; }
     public LogBus Log { get; } = new();
@@ -256,31 +265,25 @@ public sealed class AgentHost : IAsyncDisposable
         }
     }
 
-    /// <summary>Mirrors <see cref="SyncLiveSubscriptions"/> for audio: one subscription+player
-    /// per capture source that has audio enabled, torn down when that source is removed or
-    /// audio is turned off. A separate WebSocket from the video media channel (spec section 38)
-    /// — video and audio are independent streams, each tolerant of the other dropping out.</summary>
+    /// <summary>One subscription+player for the Master's single shared desktop-audio channel,
+    /// active whenever at least one current source has audio enabled — not one per source (see
+    /// <see cref="SharedAudioSourceId"/> for why per-source audio subscriptions caused an audible
+    /// echo). A separate WebSocket from the video media channel (spec section 38) — video and
+    /// audio are independent streams, each tolerant of the other dropping out.</summary>
     private void SyncAudioSubscriptions(IReadOnlyList<SourceDefinition> currentSources)
     {
-        var audioIds = currentSources.Where(IsAudioCaptureSource).Select(s => s.Id).ToHashSet();
+        var wantsAudio = currentSources.Any(IsAudioCaptureSource);
 
-        foreach (var staleId in _audioSubscriptions.Keys.Where(id => !audioIds.Contains(id)).ToList())
+        if (!wantsAudio && _audioSubscription is not null)
         {
-            _audioSubscriptions[staleId].Cancel();
-            _audioSubscriptions.Remove(staleId);
-            StopAudioPlayer(staleId);
+            _audioSubscription.Cancel();
+            _audioSubscription = null;
         }
-
-        foreach (var source in currentSources.Where(IsAudioCaptureSource))
+        else if (wantsAudio && _audioSubscription is null)
         {
-            if (_audioSubscriptions.ContainsKey(source.Id))
-            {
-                continue;
-            }
-
             var cts = new CancellationTokenSource();
-            _audioSubscriptions[source.Id] = cts;
-            _ = RunAudioSubscriptionAsync(source.Id, cts.Token);
+            _audioSubscription = cts;
+            _ = RunAudioSubscriptionAsync(cts);
         }
     }
 
@@ -289,16 +292,24 @@ public sealed class AgentHost : IAsyncDisposable
         && source.Config.TryGetProperty("audio", out var audioProp)
         && audioProp.ValueKind == JsonValueKind.True;
 
-    private async Task RunAudioSubscriptionAsync(string sourceId, CancellationToken cancellationToken)
+    private async Task RunAudioSubscriptionAsync(CancellationTokenSource ownCts)
     {
         using var socket = new ClientWebSocket();
         try
         {
-            await socket.ConnectAsync(new Uri($"ws://{Settings.MasterHost}:{Settings.MasterPort}/audio/{sourceId}"), cancellationToken);
+            await socket.ConnectAsync(new Uri($"ws://{Settings.MasterHost}:{Settings.MasterPort}/audio/{SharedAudioSourceId}"), ownCts.Token);
         }
         catch (Exception ex)
         {
-            Log.Write(LogCategory.Error, "AgentHost", $"Failed to connect audio subscription for {sourceId}", ex);
+            Log.Write(LogCategory.Error, "AgentHost", "Failed to connect audio subscription", ex);
+            // Clear only if we're still the current subscription — a newer call to
+            // SyncAudioSubscriptions may already have replaced us; don't stomp on it. Clearing
+            // here (rather than leaving a dead entry behind) is what lets the next scene sync retry.
+            if (ReferenceEquals(_audioSubscription, ownCts))
+            {
+                _audioSubscription = null;
+            }
+
             return;
         }
 
@@ -310,22 +321,22 @@ public sealed class AgentHost : IAsyncDisposable
         var player = new WaveOutEvent();
         player.Init(bufferedWaveProvider);
         player.Play();
-        _audioPlayers[sourceId] = (player, bufferedWaveProvider);
+        _audioPlayer = (player, bufferedWaveProvider);
 
         var gapFiller = new AudioSyncGapFiller(AudioFormat.AverageBytesPerSecond);
 
-        Log.Write(LogCategory.Audio, "AgentHost", $"Audio subscription connected for {sourceId}");
+        Log.Write(LogCategory.Audio, "AgentHost", "Audio subscription connected");
 
         var buffer = new byte[64 * 1024];
         try
         {
-            while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
+            while (!ownCts.Token.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
                 using var chunk = new MemoryStream();
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await socket.ReceiveAsync(buffer, cancellationToken);
+                    result = await socket.ReceiveAsync(buffer, ownCts.Token);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
                         return;
@@ -358,20 +369,25 @@ public sealed class AgentHost : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Log.Write(LogCategory.Error, "AgentHost", $"Audio subscription for {sourceId} dropped", ex);
+            Log.Write(LogCategory.Error, "AgentHost", "Audio subscription dropped", ex);
         }
         finally
         {
-            StopAudioPlayer(sourceId);
+            StopAudioPlayer();
+            if (ReferenceEquals(_audioSubscription, ownCts))
+            {
+                _audioSubscription = null;
+            }
         }
     }
 
-    private void StopAudioPlayer(string sourceId)
+    private void StopAudioPlayer()
     {
-        if (_audioPlayers.Remove(sourceId, out var entry))
+        if (_audioPlayer is { } entry)
         {
             entry.Player.Stop();
             entry.Player.Dispose();
+            _audioPlayer = null;
         }
     }
 
@@ -382,15 +398,8 @@ public sealed class AgentHost : IAsyncDisposable
             cts.Cancel();
         }
 
-        foreach (var cts in _audioSubscriptions.Values)
-        {
-            cts.Cancel();
-        }
-
-        foreach (var sourceId in _audioPlayers.Keys.ToList())
-        {
-            StopAudioPlayer(sourceId);
-        }
+        _audioSubscription?.Cancel();
+        StopAudioPlayer();
 
         if (Connection is not null)
         {

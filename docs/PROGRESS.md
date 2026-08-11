@@ -763,11 +763,69 @@ exe right after launch.
       proper fix (code-signing the compiled installer) is out of scope without a signing
       certificate; unblocking remains the practical workaround either way.
 
+## Audio echo fix: one shared desktop-audio capture instead of one per source (2026-08-11)
+
+User report: "when i capture a scene with audio i am hearing echo... the echo is heard on the
+other pcs." This was the exact mechanism KNOWN_LIMITATIONS.md had already flagged as a known gap
+(logged during the earlier audio/video sync fix session, never actually fixed): `MasterHost` gave
+every capture source with "Include audio" on its own independent `AudioCaptureService` — its own
+`WasapiLoopbackCapture` — but loopback captures the *entire* system output regardless of which
+app is targeted. Two audio-enabled sources were always two independent captures of the identical
+signal, sent as two unsynchronized network streams (`/audio/{sourceId}` each), and played on the
+node through two separate `WaveOutEvent`s with zero mixing. Same audio twice, phase-offset by
+however much the two free-running 100ms capture pumps + independent 2s playback buffers happened
+to drift — an echo, exactly as reported. Traced end-to-end (capture → Master wiring → network →
+Agent playback) before writing any fix, confirming this — not an acoustic room-echo from Master's
+own speakers plus a node's — was the actual mechanism, since audio defaults to *on* for every new
+capture source (`AddCaptureSourceForWindow`'s `defaultIncludeAudio = true`), so any scene with two
+or more capture sources hit this by default, no unusual setup required.
+
+Considered and rejected real mixing (`MixingSampleProvider` summing N `BufferedWaveProvider`
+inputs) as the fix: since every source captures the *identical* system-wide signal today (no
+per-app audio isolation — see the limitation above), summing N copies of the same signal is
+degenerate — it just reproduces that signal at +N×6dB with phase artifacts, not new audio content.
+Mixing only becomes meaningful once sources can carry genuinely different audio (per-process
+loopback, mic, media file — all still Phase 7, still not built). The actual fix instead collapses
+capture to what the signal already is: one shared stream per Master.
+
+- [x] `MasterHost`: replaced the per-source `Dictionary<string, AudioCaptureService>` with one
+      ref-counted shared `AudioCaptureService` (`_sharedAudioCapture`) plus a
+      `HashSet<string> _audioEnabledSources`. `StartAudioCapture` starts it only if not already
+      running; `StopAudioCapture` stops it only once the last source disables audio. Broadcasts on
+      one well-known channel id (`SharedAudioSourceId = "desktop-audio"`) instead of per-sourceId.
+- [x] `AgentHost`: replaced the per-source subscription/player dictionaries with a single nullable
+      subscription + player, active whenever *any* current source in the scene has audio enabled
+      (`SyncAudioSubscriptions` now checks `.Any(IsAudioCaptureSource)` instead of diffing a set of
+      ids). Subscribes once to `/audio/desktop-audio` regardless of how many sources want audio.
+- [x] Fixed a latent bug found while doing this refactor: the original `RunAudioSubscriptionAsync`
+      left a dead entry in `_audioSubscriptions` forever if the WebSocket connect itself failed
+      (the method returned early without removing it), permanently blocking any retry on the next
+      scene sync. The rewritten version clears its own subscription slot on connect failure too
+      (guarded by reference-equality so a newer subscription started in the meantime is never
+      clobbered).
+- [x] `AudioChunkFraming`/`AudioSyncGapFiller`/`MediaHub` needed no changes — source ids were
+      already opaque routing keys with no validation against real Project sources, so a constant
+      string channel id works exactly like a real source id did.
+- [x] No test coupled to the private per-source dictionaries/methods being restructured
+      (`AudioCaptureEndToEndTests` exercises `AudioCaptureService` directly, not `MasterHost`'s
+      wiring of it) — nothing to update, nothing broke by construction.
+- [x] Full solution: zero compiler errors, 6 of 7 test projects verified passing (`TradeFix.Agent.Tests`
+      included, most relevant to the `AgentHost` changes). `TradeFix.Master.Tests` could not be run
+      in this sandbox — a live `dotnet` process (a real, actively-running Master instance, not a
+      stale lock) held `TradeFix.Master`'s own Debug build output locked for the entire session and
+      never freed it. Master's own compile step (before the failing copy) produced zero errors, and
+      Agent — which changes just as much code — is fully verified, so confidence is high, but this
+      is a real, honestly-reported gap: `MasterHost`'s own test suite was not actually executed
+      against this change before it shipped.
+- [ ] Not verified live against real PC2/PC3 hardware with audio actually enabled on two sources
+      simultaneously — only reasoned through from source. Worth a real multi-PC check the next
+      time hands-on verification is possible, same caveat as the audio/video sync fix above.
+
 ## Next up
 
-Live-verify the audio sync fix against PC2/PC3 under genuine network pressure (not just the local
-loopback tone test above). Confirm the installer auto-unblock fix resolves PC3's actual symptom.
-Then Phase 4's remaining source types (Video file, Browser, Camera), granular
+Live-verify the audio sync fix and the echo fix against PC2/PC3 under genuine network pressure
+(not just local reasoning/loopback tests). Confirm the installer auto-unblock fix resolves PC3's
+actual symptom. Then Phase 4's remaining source types (Video file, Browser, Camera), granular
 MOVE_SOURCE/RESIZE_SOURCE instead of whole-object UPDATE_SOURCE for bandwidth efficiency, and
-eventually proper audio mixing (Phase 7) so multiple simultaneous audio-enabled captures don't
-echo.
+eventually per-app audio isolation + real mixing (Phase 7) once sources can carry genuinely
+different audio instead of all sharing the one system-wide signal.

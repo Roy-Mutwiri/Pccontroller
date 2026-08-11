@@ -73,12 +73,22 @@ document the limitation").
   couldn't be verified against the real API in this environment. NAudio's WASAPI loopback (system
   output) is mature and reliable; that's what's implemented. The "Include audio" checkbox is
   honestly labeled as desktop sound, not per-app isolation.
-- **Multiple simultaneous captures with audio enabled will produce duplicate/echoed playback** on
-  a node — each capture source gets its own independent WASAPI loopback + player, and since the
-  underlying audio is the same system-wide output for all of them, having audio on for two
-  captures at once means a node hears the same system audio played twice, slightly out of phase.
-  Proper mixing of multiple audio sources into one output is Phase 7 ("Audio Engine") work, not
-  this slice — for now, enable audio on at most one capture at a time per node.
+- **Fixed: multiple audio-enabled captures no longer echo on nodes (fixed 2026-08-11).** Previously
+  each capture source with "Include audio" on got its own independent `AudioCaptureService`
+  (its own WASAPI loopback) and its own network channel/player on the node — but since loopback
+  captures the *entire* system output regardless of which app is targeted, two audio-enabled
+  sources were always two independent captures of the identical signal, sent as two
+  unsynchronized streams and played through two separate `WaveOutEvent`s. Same audio twice,
+  slightly out of phase, is exactly what an echo is. Real per-app audio isolation is still Phase 7
+  ("Audio Engine") work and still not implemented — but since every source currently captures the
+  *same* signal anyway, mixing would have been pointless (summing two identical streams is just
+  that stream at +6dB with phase artifacts). The actual fix: `MasterHost` now shares one
+  `AudioCaptureService` across every source that wants audio (ref-counted, started when the first
+  source enables it, stopped when the last one disables it) and broadcasts it on one well-known
+  channel; `AgentHost` mirrors this with a single subscription/player active whenever any current
+  source wants audio, instead of one per source. Enabling audio on any number of capture sources
+  is now safe and produces exactly one clean audio stream per node. See `MasterHost`'s and
+  `AgentHost`'s `SharedAudioSourceId` remarks for the detail.
 - **A real, non-obvious bug was found and fixed while building this**: the first resampling
   approach tried (`MediaFoundationResampler`) measurably produced near-silent output for roughly
   the first second of every capture session, regardless of quality setting — a COM/Media
