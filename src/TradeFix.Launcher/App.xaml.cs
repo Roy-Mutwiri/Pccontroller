@@ -21,6 +21,14 @@ public partial class App : Application
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
+        // See TradeFix.Agent's App.xaml.cs for why this exists: previously nothing caught
+        // unhandled exceptions here, so any UI-thread exception took the whole process down with
+        // no trace — indistinguishable from the app just vanishing. The Launcher has no LogBus of
+        // its own (it's a thin supervisor, not a full app), so this only has the TEMP fallback.
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => LogCrash("AppDomain.UnhandledException", args.ExceptionObject as Exception);
+        DispatcherUnhandledException += (_, args) => LogCrash("DispatcherUnhandledException", args.Exception);
+        TaskScheduler.UnobservedTaskException += (_, args) => LogCrash("UnobservedTaskException", args.Exception);
+
         _settings = LauncherSettingsStore.Load();
 
         if (_settings.Role == LauncherRole.Unset)
@@ -168,5 +176,18 @@ public partial class App : Application
         _trayIcon.Dispose();
         _supervisor.Dispose();
         Shutdown();
+    }
+
+    private static void LogCrash(string source, Exception? ex)
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "tflauncher-crash.txt");
+            System.IO.File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} [{source}] {ex}\n\n");
+        }
+        catch
+        {
+            // if we can't even log the crash, there's nothing more to do
+        }
     }
 }

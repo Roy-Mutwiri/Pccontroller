@@ -821,11 +821,50 @@ capture to what the signal already is: one shared stream per Master.
       simultaneously — only reasoned through from source. Worth a real multi-PC check the next
       time hands-on verification is possible, same caveat as the audio/video sync fix above.
 
+## Crash logging for Master/Agent/Launcher; guard the audio-device init (2026-08-11)
+
+Live-watched Master's log while the user connected PC2/PC3 to debug the "still closing on PC3"
+report from the installer auto-unblock fix above. The installer had actually succeeded this time —
+Master's log showed a node genuinely pairing, re-authenticating, and subscribing to video/audio —
+but then disconnecting again ~9 seconds later, and the user confirmed they'd tried reopening the
+app themselves with the same result. So the *installed app* was crashing shortly after a
+successful connection, not the installer. That ruled out the earlier theory and pointed at a real
+runtime bug.
+
+Root cause identified by inspection: `TradeFix.Agent`'s (and Master's, and Launcher's) `App.xaml.cs`
+had no unhandled-exception handling at all — `TradeFix.Setup` had picked this up during its own
+crash investigation earlier, but it was never carried over to the other three apps. Any exception
+on the UI thread takes a WPF app down instantly and silently by default, which is indistinguishable
+from "opens and closes itself" — exactly the symptom reported, just one step further along than
+first assumed.
+
+- [x] Added the same `AppDomain.UnhandledException`/`DispatcherUnhandledException`/
+      `TaskScheduler.UnobservedTaskException` handlers (already proven in `TradeFix.Setup`) to
+      `TradeFix.Agent`, `TradeFix.Master`, and `TradeFix.Launcher`'s `App.xaml.cs`. Agent and
+      Master log to their existing `Log` (visible in `%LocalAppData%\TradeFixBroadcast\{App}\logs`)
+      plus a TEMP fallback file for the case where `Host`/its logger isn't constructed yet;
+      Launcher (no `LogBus` of its own) gets just the TEMP file. This doesn't prevent a crash that
+      genuinely can't be recovered from, but it guarantees a trace survives it instead of the
+      process just vanishing — the same principle as the installer's `Install-Log.txt` fix above.
+- [x] Found and fixed one concrete, plausible crash candidate while in this code:
+      `AgentHost.RunAudioSubscriptionAsync` constructed and initialized `WaveOutEvent` outside any
+      try/catch. `WaveOutEvent.Init`/`Play` throws if the PC has no default playback device
+      (WASAPI "NoDriver" — plausible on a render node with audio disabled or no output device).
+      Now wrapped: logs a clear "no audio playback device available" message and cleanly skips
+      audio for that subscription instead of leaving an uncaught exception on a fire-and-forget
+      Task. Full solution rebuilt and tested: 84/84 passing.
+- [ ] Not yet confirmed this was *the* cause of PC3's crash specifically — the fix ships crash
+      visibility either way (next occurrence will show up in Agent's log or `%TEMP%\tfagent-crash.txt`
+      with an actual exception and stack trace), so the next report from PC3 should be
+      immediately diagnosable instead of another round of guessing.
+
 ## Next up
 
-Live-verify the audio sync fix and the echo fix against PC2/PC3 under genuine network pressure
-(not just local reasoning/loopback tests). Confirm the installer auto-unblock fix resolves PC3's
-actual symptom. Then Phase 4's remaining source types (Video file, Browser, Camera), granular
-MOVE_SOURCE/RESIZE_SOURCE instead of whole-object UPDATE_SOURCE for bandwidth efficiency, and
-eventually per-app audio isolation + real mixing (Phase 7) once sources can carry genuinely
-different audio instead of all sharing the one system-wide signal.
+Get the actual crash trace from PC3 now that Agent logs unhandled exceptions (check
+`%LocalAppData%\TradeFixBroadcast\Agent\logs` and `%TEMP%\tfagent-crash.txt` after it happens
+again) and fix whatever it actually says. Live-verify the audio sync fix and the echo fix against
+PC2/PC3 under genuine network pressure (not just local reasoning/loopback tests). Then Phase 4's
+remaining source types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE instead
+of whole-object UPDATE_SOURCE for bandwidth efficiency, and eventually per-app audio isolation +
+real mixing (Phase 7) once sources can carry genuinely different audio instead of all sharing the
+one system-wide signal.

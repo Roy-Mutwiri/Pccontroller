@@ -318,9 +318,32 @@ public sealed class AgentHost : IAsyncDisposable
             DiscardOnBufferOverflow = true,
             BufferDuration = TimeSpan.FromSeconds(2)
         };
-        var player = new WaveOutEvent();
-        player.Init(bufferedWaveProvider);
-        player.Play();
+
+        // WaveOutEvent.Init/Play throws if this PC has no default playback device (WASAPI
+        // "NoDriver", e.g. a headless render node or one with audio disabled/muted at the OS
+        // level). This runs on a fire-and-forget Task (SyncAudioSubscriptions doesn't await it),
+        // so an uncaught exception here wouldn't normally crash the whole app — but it's cheap to
+        // guarantee that and fail this one subscription gracefully instead of leaving it to
+        // .NET's unobserved-task-exception handling, and it means video keeps working even when a
+        // node genuinely has no audio output.
+        WaveOutEvent player;
+        try
+        {
+            player = new WaveOutEvent();
+            player.Init(bufferedWaveProvider);
+            player.Play();
+        }
+        catch (Exception ex)
+        {
+            Log.Write(LogCategory.Error, "AgentHost", "No audio playback device available on this PC — audio disabled, video unaffected", ex);
+            if (ReferenceEquals(_audioSubscription, ownCts))
+            {
+                _audioSubscription = null;
+            }
+
+            return;
+        }
+
         _audioPlayer = (player, bufferedWaveProvider);
 
         var gapFiller = new AudioSyncGapFiller(AudioFormat.AverageBytesPerSecond);
