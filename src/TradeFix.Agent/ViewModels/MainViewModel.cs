@@ -74,6 +74,54 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Forgets this node's pairing (credentials + Master address) and returns to the
+    /// first-launch "paste a connect code" state — so a node can move to a different Master
+    /// without hand-deleting files.</summary>
+    [RelayCommand]
+    private async Task LogoutAsync()
+    {
+        var confirmed = System.Windows.MessageBox.Show(
+            "Log out from this Master? The saved pairing is forgotten and this PC goes back to asking for a connect code.",
+            "TradeFix Render Agent", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+        if (confirmed != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        await _host.LogoutAsync();
+        State = NodeConnectionState.Offline;
+        NodeId = null;
+        ConnectedMasterSummary = null;
+        ConnectCodeInput = string.Empty;
+        PairingCodeInput = string.Empty;
+        OnPropertyChanged(nameof(KnowsMaster));
+        OnPropertyChanged(nameof(NeedsPairingCode));
+    }
+
+    /// <summary>Flips this PC's role to Master: the counterpart app starts (directly, or via the
+    /// Launcher when it's the one supervising) and this Agent closes.</summary>
+    [RelayCommand]
+    private void SwitchToMaster()
+    {
+        var confirmed = System.Windows.MessageBox.Show(
+            "Switch this PC to Master? The render agent will close and the Master control app will start.",
+            "TradeFix Render Agent", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+        if (confirmed != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var error = TradeFix.Common.RoleSwitcher.SwitchThisPc(toMaster: true);
+        if (error is not null)
+        {
+            System.Windows.MessageBox.Show(error, "TradeFix Render Agent",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
+        System.Windows.Application.Current.Shutdown();
+    }
+
     private void BeginConnect(AgentSettings settings, string? autoSubmitCode)
     {
         _pendingParsedPairingCode = autoSubmitCode;

@@ -210,6 +210,8 @@
         <Border Grid.Row="0" Background="{StaticResource Brush.Surface}">
             <Grid>
                 <DockPanel Margin="20,12">
+                    <Button Content="Switch This PC to Render Node" DockPanel.Dock="Right"
+                            VerticalAlignment="Center" Click="SwitchToRenderNode_Click" />
                     <TextBlock Text="TradeFix Broadcast Control Center" FontWeight="Bold" FontSize="16" VerticalAlignment="Center" />
                     <TextBlock Text="{Binding ServerSummary}" Style="{StaticResource Text.Secondary}"
                                VerticalAlignment="Center" Margin="16,0,0,0" DockPanel.Dock="Left" />

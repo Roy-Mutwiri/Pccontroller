@@ -68,6 +68,43 @@ public sealed class AgentHost : IAsyncDisposable
         Log.AddSink(new FileLogSink(AppPaths.LogsDirectory("Agent")));
     }
 
+    /// <summary>"Logs out" of the currently-paired Master: disconnects, forgets the stored
+    /// credentials and Master address (node name is kept — it describes this PC, not the
+    /// pairing), and clears the render window. After this the Agent is back to its first-launch
+    /// state, ready to accept a connect code from a different Master — previously a node was
+    /// permanently bound to whichever Master it first paired with unless someone hand-deleted
+    /// its credential files.</summary>
+    public async Task LogoutAsync()
+    {
+        foreach (var cts in _liveSubscriptions.Values)
+        {
+            cts.Cancel();
+        }
+
+        _liveSubscriptions.Clear();
+        _audioSubscription?.Cancel();
+        _audioSubscription = null;
+
+        if (Connection is not null)
+        {
+            await Connection.DisposeAsync();
+            Connection = null;
+        }
+
+        CredentialStore.Clear();
+        Settings = new AgentSettings { NodeName = Settings.NodeName };
+        AgentSettingsStore.Save(Settings);
+
+        // Clear whatever scene the render window is still showing — an empty scene load is the
+        // same replace-all mechanism a real scene switch uses.
+        SceneLoaded?.Invoke(new LoadSceneDefinitionPayload
+        {
+            Scene = new SceneDefinition { Id = "logged-out", Name = "Logged out" },
+            Sources = []
+        });
+        Log.Write(LogCategory.Node, "AgentHost", "Logged out — pairing and Master address forgotten");
+    }
+
     public AgentConnection Connect(AgentSettings settings)
     {
         Settings = settings;

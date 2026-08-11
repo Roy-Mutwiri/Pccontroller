@@ -975,6 +975,36 @@ so its GPL license does not extend to this codebase.
       OLD build against a new Master would show nothing for H.264 sources (it expects JPEG) —
       all PCs should reinstall from the current package together.
 
+## In-app log-out and role switching (2026-08-11)
+
+User: "add a place i can log out to the connected node change from node to master pc make the app
+flexible not stuck in one place." Previously a node was permanently bound to whichever Master it
+first paired with (only hand-deleting credential files undid it), and changing a PC's role lived
+solely in the Launcher's tray menu, which an operator may never discover.
+
+- [x] Agent: **Log Out from Master** button (confirm dialog) — `AgentHost.LogoutAsync()`
+      disconnects, cancels media/audio subscriptions, deletes the DPAPI credential file, forgets
+      the Master address (node name kept — it describes the PC, not the pairing), and clears the
+      render window via an empty scene load. The Agent returns to its first-launch "paste a
+      connect code" state, ready to pair with a *different* Master.
+- [x] Agent: **Switch This PC to Master** button; Master: **Switch This PC to Render Node**
+      button (top bar). Both confirm, save the new role, start the counterpart app, and close.
+- [x] `RoleSwitcher` (new, `TradeFix.Common`) — writes the Launcher's own settings file (numeric
+      enum schema pinned by round-trip tests against the real `LauncherSettingsStore`, so a
+      future schema change fails tests instead of silently misreading), resolves the counterpart
+      exe via the same sibling-folder layout `AppProcessSupervisor` uses, and starts it as an
+      independent process.
+- [x] Launcher: when its supervised app exits, it now re-reads the saved role from disk — if it
+      changed (an in-app switch), it starts the new role's app, but only if that app isn't
+      already running (the app itself is the primary starter; this check is what prevents the
+      two starters racing into duplicate processes). A same-role exit just refreshes the tray.
+- [x] 3 new tests (`RoleSwitcherTests`): both role values round-trip through the Launcher's real
+      reader (real settings file, saved/restored around each test), and counterpart path
+      resolution against a real temp installed-layout. Full solution: 93/93.
+- [ ] Not verified as a live multi-app flow (click button → watch handoff) — the underlying
+      pieces (settings write, process start, Launcher reload) are individually tested, but the
+      full choreography should be watched once on a real PC.
+
 ## Next up
 
 Live-verify the H.264 pipeline across real PC2/PC3 links (quality holding at high settings under

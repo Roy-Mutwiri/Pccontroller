@@ -49,7 +49,33 @@ public partial class App : Application
         CreateTrayIcon();
         StartRole(_settings.Role, showErrorIfMissing: true);
 
-        _supervisor.ProcessExitedUnexpectedly += () => Dispatcher.Invoke(RefreshTrayMenu);
+        _supervisor.ProcessExitedUnexpectedly += () => Dispatcher.Invoke(OnSupervisedAppExited);
+    }
+
+    /// <summary>The supervised app exited on its own. Both apps now have in-app "switch this PC's
+    /// role" buttons (see TradeFix.Common.RoleSwitcher) that save the new role and then close the
+    /// app — so on exit, re-read the saved role from disk: if it changed, this is a deliberate
+    /// switch and the new role's app should be running. The already-running check is what keeps
+    /// the two possible starters (the app itself and this supervisor) from racing into duplicate
+    /// processes.</summary>
+    private void OnSupervisedAppExited()
+    {
+        var previousRole = _settings.Role;
+        _settings = LauncherSettingsStore.Load();
+
+        if (_settings.Role != previousRole && _settings.Role != LauncherRole.Unset && !RoleAppAlreadyRunning(_settings.Role))
+        {
+            StartRole(_settings.Role, showErrorIfMissing: true);
+            return;
+        }
+
+        RefreshTrayMenu();
+    }
+
+    private static bool RoleAppAlreadyRunning(LauncherRole role)
+    {
+        var processName = role == LauncherRole.Master ? "TradeFix.Master" : "TradeFix.Agent";
+        return System.Diagnostics.Process.GetProcessesByName(processName).Length > 0;
     }
 
     private void StartRole(LauncherRole role, bool showErrorIfMissing)

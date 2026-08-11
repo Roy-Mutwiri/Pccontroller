@@ -38,6 +38,30 @@ public partial class MainWindow : Window
 
     private MainViewModel ViewModel => (MainViewModel)DataContext;
 
+    /// <summary>Flips this PC's role to Render Node: the Agent app starts (directly, or via the
+    /// Launcher when it's the one supervising) and this Master closes — the counterpart to the
+    /// Agent's "Switch This PC to Master" button, so no PC is stuck in the role picked at
+    /// install time.</summary>
+    private void SwitchToRenderNode_Click(object sender, RoutedEventArgs e)
+    {
+        var confirmed = MessageBox.Show(
+            "Switch this PC to Render Node? The Master control app will close — any connected nodes lose their Master until one runs again — and the render agent will start.",
+            "TradeFix Broadcast", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirmed != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var error = TradeFix.Common.RoleSwitcher.SwitchThisPc(toMaster: false);
+        if (error is not null)
+        {
+            MessageBox.Show(error, "TradeFix Broadcast", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        Application.Current.Shutdown();
+    }
+
     private void ProgramCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) =>
         ViewModel.SelectSource(null);
 
