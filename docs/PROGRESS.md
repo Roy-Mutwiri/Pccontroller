@@ -740,11 +740,34 @@ audibly race ahead of the video it should line up with, matching the reported sy
       flowing. Genuinely simultaneous stream-start alignment remains future work. See
       KNOWN_LIMITATIONS.md.
 
+## Installer auto-unblock fix (2026-08-11)
+
+User report from a real target PC (PC3, not this dev sandbox): `TradeFix.Setup.exe` "opening and
+closing itself immediately." This is the installer live-verification gap noted above, now
+confirmed on real end-user hardware rather than just suspected sandbox behavior — consistent with
+Windows tagging browser-downloaded files with Mark-of-the-Web (a hidden `Zone.Identifier`
+alternate-data-stream), which lets SmartScreen/App Control silently kill an unrecognized, unsigned
+exe right after launch.
+
+- [x] `Install-TradeFixBroadcast.ps1` now runs `Unblock-File` recursively over the entire
+      extracted package (`installer\` + `publish\`) before anything is copied or run, and again
+      over the installed copy under `%LocalAppData%\Programs\TradeFix Broadcast` after copying —
+      so Master/Agent/Launcher never launch while still carrying the flag that triggers this.
+- [x] Verified end-to-end in this sandbox: ran the updated installer fresh, confirmed the
+      unblock step runs without error, and confirmed the installed `TradeFix.Launcher.exe`
+      launched and stayed running (not an open-close) afterward.
+- [x] README and KNOWN_LIMITATIONS updated with the symptom and both fixes (use the `.bat`
+      installer, which now handles this automatically; or manually right-click →
+      Properties → Unblock on `TradeFix.Setup.exe` if sticking with the compiled installer).
+- [ ] This does not fix `TradeFix.Setup.exe` itself — it's still not the recommended path. A
+      proper fix (code-signing the compiled installer) is out of scope without a signing
+      certificate; unblocking remains the practical workaround either way.
+
 ## Next up
 
 Live-verify the audio sync fix against PC2/PC3 under genuine network pressure (not just the local
-loopback tone test above). Live-verify TradeFix.Setup.exe on an actual target PC (not this dev
-sandbox) now that the code itself is complete and unit-tested. Then Phase 4's remaining source
-types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE instead of whole-object
-UPDATE_SOURCE for bandwidth efficiency, and eventually proper audio mixing (Phase 7) so multiple
-simultaneous audio-enabled captures don't echo.
+loopback tone test above). Confirm the installer auto-unblock fix resolves PC3's actual symptom.
+Then Phase 4's remaining source types (Video file, Browser, Camera), granular
+MOVE_SOURCE/RESIZE_SOURCE instead of whole-object UPDATE_SOURCE for bandwidth efficiency, and
+eventually proper audio mixing (Phase 7) so multiple simultaneous audio-enabled captures don't
+echo.

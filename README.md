@@ -32,6 +32,11 @@ run `Uninstall-TradeFixBroadcast.bat`/`TradeFix.Setup.exe --uninstall` from the 
 earlier install didn't finish copying files — reinstall with `Install-TradeFixBroadcast.bat` to get
 a known-complete install.
 
+**`TradeFix.Setup.exe` opens and immediately closes?** Windows blocks unrecognized, unsigned exes
+downloaded from the internet (SmartScreen/App Control reacting to the file's Mark-of-the-Web).
+Either right-click the exe → Properties → check "Unblock" → OK and try again, or switch to
+`Install-TradeFixBroadcast.bat`, which unblocks everything it installs automatically.
+
 ## Build (developers)
 
 Requires the .NET 8 SDK.

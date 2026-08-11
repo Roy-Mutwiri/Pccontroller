@@ -33,6 +33,18 @@ $apps = @(
 Write-Host "TradeFix Broadcast  -  Setup" -ForegroundColor Cyan
 Write-Host ""
 
+# Files extracted from a zip downloaded via a browser carry Windows' Mark-of-the-Web (a hidden
+# Zone.Identifier alternate data stream), which is what lets SmartScreen/App Control silently
+# kill an unrecognized, unsigned exe right after launch  -  exactly the "opens and closes itself
+# immediately" symptom seen with the compiled TradeFix.Setup.exe installer (see
+# docs/KNOWN_LIMITATIONS.md). This script itself runs fine regardless (trusted, signed
+# powershell.exe host), but the Master/Agent/Launcher exes it's about to copy into place and then
+# launch are not exempt just because a script placed them. Unblock-File strips that flag from
+# every file in the whole downloaded package before anything gets copied or run.
+Write-Host "Unblocking downloaded files..." -ForegroundColor Cyan
+Get-ChildItem -Path $repoRoot -Recurse -File -ErrorAction SilentlyContinue |
+    Unblock-File -ErrorAction SilentlyContinue
+
 foreach ($app in $apps) {
     if (-not (Test-Path (Join-Path $app.Source $app.Exe))) {
         Write-Host "Missing $($app.Source)\$($app.Exe)." -ForegroundColor Red
@@ -53,6 +65,11 @@ foreach ($app in $apps) {
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     Copy-Item -Path (Join-Path $app.Source "*") -Destination $destination -Recurse -Force
 }
+
+# Copy-Item can carry the Mark-of-the-Web over to the destination on some filesystems  -  unblock
+# the installed copy too, not just the source package unblocked above.
+Get-ChildItem -Path $installRoot -Recurse -File -ErrorAction SilentlyContinue |
+    Unblock-File -ErrorAction SilentlyContinue
 
 $launcherExe = Join-Path $installRoot "Launcher\TradeFix.Launcher.exe"
 

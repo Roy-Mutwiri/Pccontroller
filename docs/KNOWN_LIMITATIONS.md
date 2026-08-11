@@ -166,6 +166,20 @@ document the limitation").
   it means the install that put the Launcher there didn't finish copying Master/Agent into the
   sibling folders it expects — almost always because whatever installer was used didn't complete
   successfully. Reinstall using `Install-TradeFixBroadcast.bat` to get a known-complete install.
+- **Confirmed on a real target PC (2026-08-11), not just this dev sandbox**: `TradeFix.Setup.exe`
+  opened and immediately closed on PC3 after being downloaded and extracted from the GitHub
+  Release zip. This is consistent with Windows' Mark-of-the-Web (the hidden `Zone.Identifier`
+  alternate-data-stream every file downloaded via a browser gets tagged with) triggering
+  SmartScreen/App Control to silently kill an unrecognized, unsigned exe right after launch —
+  same failure class as the sandbox behavior described above, now reproduced on real end-user
+  hardware. **Fix applied to `Install-TradeFixBroadcast.ps1`**: it now runs `Unblock-File`
+  recursively over the whole extracted package before copying anything, and again over the
+  installed copy after copying, stripping that flag before the Master/Agent/Launcher exes are
+  ever launched. This doesn't fix `TradeFix.Setup.exe` itself (still recommend
+  `Install-TradeFixBroadcast.bat`) — but it does mean a user hitting this on the `.exe` path has a
+  documented, verified-working alternative: unblock `TradeFix.Setup.exe` by hand (right-click →
+  Properties → Unblock) if they want to keep using it, or switch to the `.bat` installer, which
+  now handles unblocking automatically for everything it installs.
 
 ## Output (Phase 8 — not started)
 
