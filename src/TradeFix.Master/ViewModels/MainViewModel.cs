@@ -168,10 +168,15 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Called continuously while dragging a crop handle (see MainWindow's
-    /// CropHandle_MouseMove) — same live-update-then-network-broadcast pattern as
-    /// <see cref="UpdateSourceTransform"/>, just for the four crop fractions instead of X/Y/W/H.</summary>
-    public void UpdateSourceCrop(SourceItemViewModel item, double left, double top, double right, double bottom)
+    /// CropHandle_MouseMove) — trim-style cropping moves the box AND the crop fractions together
+    /// so the content underneath stays anchored; one transform broadcast carries both.</summary>
+    public void UpdateSourceCropBox(SourceItemViewModel item, double x, double y, double width, double height,
+        double left, double top, double right, double bottom)
     {
+        item.X = x;
+        item.Y = y;
+        item.Width = width;
+        item.Height = height;
         item.CropLeft = left;
         item.CropTop = top;
         item.CropRight = right;

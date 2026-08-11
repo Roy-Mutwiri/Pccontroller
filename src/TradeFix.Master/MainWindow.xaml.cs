@@ -182,6 +182,10 @@ public partial class MainWindow : Window
         _isCropping = true;
         _cropEdge = edge;
         _dragStartMouse = e.GetPosition(ProgramCanvas);
+        _dragStartX = item.X;
+        _dragStartY = item.Y;
+        _dragStartWidth = item.Width;
+        _dragStartHeight = item.Height;
         _dragStartCropLeft = item.CropLeft;
         _dragStartCropTop = item.CropTop;
         _dragStartCropRight = item.CropRight;
@@ -190,6 +194,14 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// <summary>Trim-style cropping, like every photo/TikTok crop tool: dragging an edge shrinks
+    /// the BOX from that edge while the content underneath stays anchored at its current scale
+    /// and position — the strip you drag over disappears; drag back out and it reappears. The
+    /// math holds the "full content rectangle" (the box the uncropped content occupies on the
+    /// canvas) invariant during the drag; box and crop fractions move together so the renderer's
+    /// overscale-and-clip mapping keeps content pixels exactly where they were. The previous
+    /// behavior changed only the fractions, which rescaled the remaining content to fill the
+    /// unchanged box — it read as stretching/zooming, not cropping.</summary>
     private void CropHandle_MouseMove(object sender, MouseEventArgs e)
     {
         if (!_isCropping || _activeItem is null)
@@ -201,6 +213,17 @@ public partial class MainWindow : Window
         var deltaX = current.X - _dragStartMouse.X;
         var deltaY = current.Y - _dragStartMouse.Y;
 
+        // The uncropped content's rectangle on the canvas, reconstructed from the drag-start
+        // snapshot — the invariant every edge drag preserves.
+        var fullWidth = _dragStartWidth / Math.Max(0.05, 1 - _dragStartCropLeft - _dragStartCropRight);
+        var fullX = _dragStartX - fullWidth * _dragStartCropLeft;
+        var fullHeight = _dragStartHeight / Math.Max(0.05, 1 - _dragStartCropTop - _dragStartCropBottom);
+        var fullY = _dragStartY - fullHeight * _dragStartCropTop;
+
+        var x = _dragStartX;
+        var y = _dragStartY;
+        var width = _dragStartWidth;
+        var height = _dragStartHeight;
         var left = _dragStartCropLeft;
         var top = _dragStartCropTop;
         var right = _dragStartCropRight;
@@ -209,20 +232,49 @@ public partial class MainWindow : Window
         switch (_cropEdge)
         {
             case "Left":
-                left = Clamp(_dragStartCropLeft + deltaX / _activeItem.Width, 0, MaxOppositeCropSum - right);
+            {
+                var rightEdge = _dragStartX + _dragStartWidth;
+                x = Clamp(_dragStartX + deltaX,
+                    fullX, // can't un-crop past the content's real edge
+                    Math.Min(rightEdge - MinBoxSize, fullX + (MaxOppositeCropSum - right) * fullWidth));
+                width = rightEdge - x;
+                left = (x - fullX) / fullWidth;
                 break;
+            }
+
             case "Right":
-                right = Clamp(_dragStartCropRight - deltaX / _activeItem.Width, 0, MaxOppositeCropSum - left);
+            {
+                var rightEdge = Clamp(_dragStartX + _dragStartWidth + deltaX,
+                    Math.Max(_dragStartX + MinBoxSize, fullX + (1 - MaxOppositeCropSum + left) * fullWidth),
+                    fullX + fullWidth);
+                width = rightEdge - _dragStartX;
+                right = (fullX + fullWidth - rightEdge) / fullWidth;
                 break;
+            }
+
             case "Top":
-                top = Clamp(_dragStartCropTop + deltaY / _activeItem.Height, 0, MaxOppositeCropSum - bottom);
+            {
+                var bottomEdge = _dragStartY + _dragStartHeight;
+                y = Clamp(_dragStartY + deltaY,
+                    fullY,
+                    Math.Min(bottomEdge - MinBoxSize, fullY + (MaxOppositeCropSum - bottom) * fullHeight));
+                height = bottomEdge - y;
+                top = (y - fullY) / fullHeight;
                 break;
+            }
+
             case "Bottom":
-                bottom = Clamp(_dragStartCropBottom - deltaY / _activeItem.Height, 0, MaxOppositeCropSum - top);
+            {
+                var bottomEdge = Clamp(_dragStartY + _dragStartHeight + deltaY,
+                    Math.Max(_dragStartY + MinBoxSize, fullY + (1 - MaxOppositeCropSum + top) * fullHeight),
+                    fullY + fullHeight);
+                height = bottomEdge - _dragStartY;
+                bottom = (fullY + fullHeight - bottomEdge) / fullHeight;
                 break;
+            }
         }
 
-        ViewModel.UpdateSourceCrop(_activeItem, left, top, right, bottom);
+        ViewModel.UpdateSourceCropBox(_activeItem, x, y, width, height, left, top, right, bottom);
     }
 
     private void CropHandle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
