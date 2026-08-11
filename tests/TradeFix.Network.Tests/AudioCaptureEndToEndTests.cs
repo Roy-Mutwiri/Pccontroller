@@ -65,7 +65,8 @@ public sealed class AudioCaptureEndToEndTests : IDisposable
         player.Play();
 
         using var capture = new AudioCaptureService(sampleRate: 24000, channels: 1);
-        capture.ChunkCaptured += bytes => audioHub.BroadcastFrameAsync(sourceId, bytes, CancellationToken.None);
+        capture.ChunkCaptured += (bytes, timestampMs) =>
+            audioHub.BroadcastFrameAsync(sourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
         capture.Start();
 
         var chunksReceived = new List<byte[]>();
@@ -93,7 +94,13 @@ public sealed class AudioCaptureEndToEndTests : IDisposable
         // Skip the very first chunk (may be a partial/quiet read as the pipeline spins up) and
         // require the rest to show genuine signal — exactly the check that would have failed
         // against the MediaFoundationResampler-based implementation.
-        var sustainedChunks = chunksReceived.Skip(1).ToList();
+        var sustainedChunks = chunksReceived.Skip(1)
+            .Select(framed =>
+            {
+                Assert.True(AudioChunkFraming.TryDecode(framed, out _, out var pcm), "Chunk is missing the timestamp header");
+                return pcm.ToArray();
+            })
+            .ToList();
         foreach (var chunk in sustainedChunks)
         {
             Assert.True(chunk.Length > 0 && chunk.Length % 2 == 0, "Chunk is not well-formed 16-bit PCM");

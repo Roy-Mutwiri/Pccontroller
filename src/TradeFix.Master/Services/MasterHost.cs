@@ -402,7 +402,8 @@ public sealed class MasterHost : IAsyncDisposable
     private void StartAudioCapture(string sourceId)
     {
         var audioCapture = new AudioCaptureService();
-        audioCapture.ChunkCaptured += bytes => AudioHub.BroadcastFrameAsync(sourceId, bytes, CancellationToken.None);
+        audioCapture.ChunkCaptured += (bytes, timestampMs) =>
+            AudioHub.BroadcastFrameAsync(sourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
         _activeAudioCaptures[sourceId] = audioCapture;
         audioCapture.Start();
     }

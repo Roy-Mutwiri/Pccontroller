@@ -7,6 +7,7 @@ using TradeFix.Assets;
 using TradeFix.Common;
 using TradeFix.Common.Logging;
 using TradeFix.Network.Client;
+using TradeFix.Network.Media;
 using TradeFix.Network.Metrics;
 using TradeFix.Protocol;
 using TradeFix.Protocol.Messages;
@@ -311,6 +312,8 @@ public sealed class AgentHost : IAsyncDisposable
         player.Play();
         _audioPlayers[sourceId] = (player, bufferedWaveProvider);
 
+        var gapFiller = new AudioSyncGapFiller(AudioFormat.AverageBytesPerSecond);
+
         Log.Write(LogCategory.Audio, "AgentHost", $"Audio subscription connected for {sourceId}");
 
         var buffer = new byte[64 * 1024];
@@ -332,8 +335,21 @@ public sealed class AgentHost : IAsyncDisposable
                 }
                 while (!result.EndOfMessage);
 
-                var bytes = chunk.ToArray();
-                bufferedWaveProvider.AddSamples(bytes, 0, bytes.Length);
+                var framed = chunk.ToArray();
+                if (!AudioChunkFraming.TryDecode(framed, out var timestampMs, out var pcm))
+                {
+                    continue; // malformed/truncated message — skip rather than play garbage
+                }
+
+                var silenceBytes = gapFiller.SilenceBytesBefore(timestampMs, pcm.Count);
+                if (silenceBytes > 0)
+                {
+                    // Filling a gap left by a dropped chunk keeps audio anchored to the same
+                    // timeline as video instead of quietly playing back-to-back and drifting ahead.
+                    bufferedWaveProvider.AddSamples(new byte[silenceBytes], 0, silenceBytes);
+                }
+
+                bufferedWaveProvider.AddSamples(pcm.Array!, pcm.Offset, pcm.Count);
             }
         }
         catch (OperationCanceledException)

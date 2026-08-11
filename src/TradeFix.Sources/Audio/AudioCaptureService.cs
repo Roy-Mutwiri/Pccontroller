@@ -34,8 +34,13 @@ public sealed class AudioCaptureService : IDisposable
     private Task? _pumpTask;
 
     /// <summary>Fires with a chunk of raw 16-bit PCM (little-endian, mono unless
-    /// <paramref name="channels"/> &gt; 1) roughly every 100ms.</summary>
-    public event Func<byte[], Task>? ChunkCaptured;
+    /// <paramref name="channels"/> &gt; 1) roughly every 100ms, plus the cumulative captured-audio
+    /// timeline position (in milliseconds of audio, not wall-clock) at which this chunk begins —
+    /// derived from bytes captured so far, not a timer read, so it stays correct even if a pump
+    /// tick is late. Used downstream to detect and fill gaps left by dropped chunks so playback
+    /// stays anchored to real elapsed audio time instead of silently drifting ahead. See
+    /// AudioSyncGapFiller in TradeFix.Agent.</summary>
+    public event Func<byte[], long, Task>? ChunkCaptured;
 
     public AudioCaptureService(int sampleRate = 24000, int channels = 1)
     {
@@ -87,6 +92,8 @@ public sealed class AudioCaptureService : IDisposable
         var chunkDuration = TimeSpan.FromMilliseconds(100);
         var chunkBytes = Math.Max(64, _targetFormat.AverageBytesPerSecond / 10);
         var buffer = new byte[chunkBytes];
+        var bytesPerMillisecond = Math.Max(1, _targetFormat.AverageBytesPerSecond / 1000.0);
+        var cumulativeBytesCaptured = 0L;
 
         using var timer = new PeriodicTimer(chunkDuration);
 
@@ -118,9 +125,11 @@ public sealed class AudioCaptureService : IDisposable
             {
                 var chunk = new byte[read];
                 Array.Copy(buffer, chunk, read);
+                var timestampMs = (long)(cumulativeBytesCaptured / bytesPerMillisecond);
+                cumulativeBytesCaptured += read;
                 try
                 {
-                    await ChunkCaptured.Invoke(chunk);
+                    await ChunkCaptured.Invoke(chunk, timestampMs);
                 }
                 catch
                 {

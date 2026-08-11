@@ -87,11 +87,29 @@ document the limitation").
   NAudio's pure-managed `WdlResamplingSampleProvider` chain, verified with the same tone-based
   test to produce correct output from the very first read. See `AudioCaptureService`'s remarks
   and `AudioCaptureEndToEndTests` for the permanent regression coverage.
-- **No audio/video sync (lip-sync) guarantee.** Video and audio are two independent channels with
-  independent chunking/network paths (spec section 38's "separate channels" principle, applied
-  literally) — nothing currently aligns their timing. For a talking-head or lip-sync-sensitive
-  use case this could drift noticeably; for a trading-app-with-alert-sounds use case it's likely
-  unnoticeable. True AV sync (spec section 17's shared-timeline approach) is future work.
+- **Audio no longer silently drifts ahead of video under network pressure (fixed 2026-08-11).**
+  Video and audio are still two independent channels with independent chunking/network paths
+  (spec section 38's "separate channels" principle), and `MediaHub`'s per-subscriber queue still
+  drops the oldest queued frame under backpressure — but that drop used to affect the two channels
+  asymmetrically: a dropped video frame just leaves a stale frame on screen a moment longer
+  (visibly frozen, harmless to timing), while a dropped *audio* chunk was silently skipped and
+  never replayed, so every chunk after it played back exactly one chunk-duration too early —
+  compounding every time it happened. Reported by a user as "the person speaking and his voice are
+  not going the same." Root-caused via `MediaHub`'s drop-oldest design plus the fact that
+  `AudioCaptureService` chunks carried no timestamp at all, so nothing downstream could tell a drop
+  had happened. Fixed by having each audio chunk carry the sender's cumulative captured-audio
+  timeline position (`AudioChunkFraming`, an 8-byte header), and having the Agent's audio
+  subscription (`AudioSyncGapFiller`) detect gaps between consecutive timestamps and insert
+  matching silence before resuming playback — giving audio the same "freeze and wait" behavior a
+  stale video frame already has, instead of quietly racing ahead. Gaps larger than 3 seconds are
+  treated as a real pause/reconnect rather than a run of drops and are not filled (that would mean
+  playing several seconds of dead air) — playback just resyncs to the new position. Verified with a
+  pure-arithmetic unit suite (`AudioSyncGapFillerTests`, 7 tests covering no-gap, single-drop,
+  multi-drop, oversized-gap, and reset cases) plus the existing real-tone `AudioCaptureEndToEndTests`
+  updated to decode the new wire framing. This does not add full spec-section-17 shared-timeline AV
+  sync (there is still no guarantee video and audio started at the *same* instant, only that audio
+  no longer drifts *relative to itself* after a drop) — genuinely simultaneous start-of-stream
+  alignment between the two channels remains future work.
 
 ## Browser source
 

@@ -20,6 +20,7 @@ public partial class RenderWindow : Window
     public RenderWindow(AgentHost host)
     {
         InitializeComponent();
+        WindowChromeHelper.ApplyDarkTitleBar(this);
 
         var viewModel = new RenderViewModel();
         DataContext = viewModel;

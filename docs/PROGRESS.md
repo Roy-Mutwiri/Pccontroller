@@ -700,10 +700,51 @@ though it worked reliably.
       `TradeFix.Setup.exe`'s build/rebuild pattern during this session, not self-contained
       single-file publishing in general.
 
+## Audio/video sync fix (2026-08-11)
+
+User report: "work on lags and sound and video not syncying together i have noticed the person
+speaking and his voice are not going the same." Root cause traced to an asymmetry introduced by
+the earlier lag fix's `MediaHub` drop-oldest backpressure handling: it treats video and audio
+identically, but dropping a frame affects the two very differently. A dropped *video* frame just
+leaves the last frame on screen a moment longer — visibly frozen, but timing-neutral once new
+frames resume. A dropped *audio* chunk was silently skipped and never replayed — `AudioCaptureService`
+attached no timestamp to chunks at all, so nothing downstream could even detect a drop had
+happened — meaning every chunk after a drop played back exactly one chunk-duration too early, and
+that error compounded on every subsequent drop. Under real network pressure this makes audio
+audibly race ahead of the video it should line up with, matching the reported symptom exactly.
+
+- [x] `AudioCaptureService.ChunkCaptured` now fires with a cumulative captured-audio-timeline
+      timestamp (milliseconds of audio, derived from bytes captured so far — not a wall-clock
+      read, so a late pump tick doesn't skew it) alongside each chunk.
+- [x] `AudioChunkFraming` (new, `TradeFix.Network.Media`) — shared 8-byte-header wire framing so
+      Master (`MasterHost.StartAudioCapture`) and Agent (`AgentHost.RunAudioSubscriptionAsync`)
+      agree on how the timestamp rides alongside the PCM payload over `/audio/{sourceId}`.
+- [x] `AudioSyncGapFiller` (new, `TradeFix.Agent.Services`) — pure state machine comparing
+      consecutive chunk timestamps; when a gap is detected (evidence a chunk was dropped upstream)
+      it reports how much silence to feed the playback buffer first, so audio gets the same
+      "freeze and wait" behavior a stale video frame already has instead of quietly skipping
+      ahead. Gaps over 3 seconds are treated as a genuine pause/reconnect rather than a run of
+      drops and are left unfilled (no multi-second dead-air playback) — playback just resyncs.
+- [x] 7 pure-arithmetic unit tests (`TradeFix.Agent.Tests/AudioSyncGapFillerTests.cs`, new test
+      project) covering: no-gap chunks insert no silence, a single dropped chunk inserts exactly
+      one chunk-duration of silence, multiple consecutive drops insert the full accumulated gap,
+      a running-total check that played duration tracks captured duration exactly across repeated
+      drops, oversized gaps are not filled, and `Reset()` forgets prior timeline state.
+- [x] Updated `AudioCaptureEndToEndTests` (real WASAPI capture + real relay + real subscriber, a
+      genuinely playing 440Hz tone) to decode the new wire framing before its amplitude assertions
+      — still passes, confirming the framing change doesn't disturb the existing real-audio path.
+      Full solution: 84/84 tests passing.
+- [ ] This fixes audio drifting *relative to itself* after a drop. It does not add full
+      spec-section-17 shared-timeline AV sync — there's still no guarantee video and audio started
+      from the exact same instant, only that audio no longer silently races ahead once both are
+      flowing. Genuinely simultaneous stream-start alignment remains future work. See
+      KNOWN_LIMITATIONS.md.
+
 ## Next up
 
-Live-verify TradeFix.Setup.exe on an actual target PC (not this dev sandbox) now that the code
-itself is complete and unit-tested. Live-verify audio against PC2/PC3 over the real network link.
-Then Phase 4's remaining source types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE
-instead of whole-object UPDATE_SOURCE for bandwidth efficiency, and eventually proper audio mixing
-(Phase 7) so multiple simultaneous audio-enabled captures don't echo.
+Live-verify the audio sync fix against PC2/PC3 under genuine network pressure (not just the local
+loopback tone test above). Live-verify TradeFix.Setup.exe on an actual target PC (not this dev
+sandbox) now that the code itself is complete and unit-tested. Then Phase 4's remaining source
+types (Video file, Browser, Camera), granular MOVE_SOURCE/RESIZE_SOURCE instead of whole-object
+UPDATE_SOURCE for bandwidth efficiency, and eventually proper audio mixing (Phase 7) so multiple
+simultaneous audio-enabled captures don't echo.
