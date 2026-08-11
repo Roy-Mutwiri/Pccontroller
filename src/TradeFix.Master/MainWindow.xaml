@@ -22,10 +22,10 @@
         <conv:FractionToPercentConverter x:Key="FractionToPercent" />
 
         <DataTemplate x:Key="NodeCardTemplate" DataType="{x:Type vm:NodeViewModel}">
-            <Border Style="{StaticResource Panel.Entrance}"
+            <Border Style="{StaticResource Card.Lift}"
                     Background="{StaticResource Brush.Surface}"
                     BorderBrush="{StaticResource Brush.Border}"
-                    BorderThickness="1" CornerRadius="10"
+                    BorderThickness="1" CornerRadius="12"
                     Padding="16" Margin="0,0,12,12" Width="230">
                 <Border.Effect>
                     <DropShadowEffect Color="{StaticResource Color.Accent}" BlurRadius="18" ShadowDepth="0" Opacity="0.12" />
@@ -205,6 +205,7 @@
         </Grid.RowDefinitions>
 
         <!-- Faint HUD grid, full-bleed behind everything -->
+        <Rectangle Grid.RowSpan="3" Fill="{StaticResource Brush.AmbientGlow}" IsHitTestVisible="False" />
         <Rectangle Grid.RowSpan="3" Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
 
         <!-- Top bar -->

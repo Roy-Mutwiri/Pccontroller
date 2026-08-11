@@ -6,6 +6,7 @@
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.WindowBackdrop}">
     <Grid Background="{StaticResource Brush.WindowBackdrop}">
+        <Rectangle Fill="{StaticResource Brush.AmbientGlow}" IsHitTestVisible="False" />
         <Rectangle Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
         <Grid Margin="20">
             <Grid.RowDefinitions>

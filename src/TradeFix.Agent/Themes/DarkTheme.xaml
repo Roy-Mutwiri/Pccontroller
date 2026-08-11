@@ -49,6 +49,22 @@
         <GradientStop Color="#FF08122A" Offset="1" />
     </LinearGradientBrush>
 
+    <!-- Ambient key light: a large, very soft accent glow from the top-left, laid over the
+         backdrop behind content. Gives the flat gradient a sense of depth and a consistent
+         "light source" for the cards' top highlights to agree with. -->
+    <RadialGradientBrush x:Key="Brush.AmbientGlow" Center="0.15,0" GradientOrigin="0.15,0" RadiusX="0.9" RadiusY="0.7">
+        <GradientStop Color="#2E4C93FF" Offset="0" />
+        <GradientStop Color="#00000000" Offset="1" />
+    </RadialGradientBrush>
+
+    <!-- The 1px top-edge inner highlight every raised glass surface carries — the visual cue
+         that light lands on its upper edge. Applied as an overlay border inside cards. -->
+    <LinearGradientBrush x:Key="Brush.CardTopSheen" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#30FFFFFF" Offset="0" />
+        <GradientStop Color="#08FFFFFF" Offset="0.08" />
+        <GradientStop Color="#00FFFFFF" Offset="0.35" />
+    </LinearGradientBrush>
+
     <!-- Faint HUD grid, laid as a full-bleed overlay behind hero window content -->
     <DrawingBrush x:Key="Brush.GridOverlay" TileMode="Tile" Viewport="0,0,48,48" ViewportUnits="Absolute" Opacity="0.05">
         <DrawingBrush.Drawing>
@@ -92,6 +108,62 @@
                     </Storyboard>
                 </BeginStoryboard>
             </EventTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Interactive card: the entrance settle PLUS a hover "lift" — the card rises 2px and its
+         glow deepens, with a matched settle on exit. The physical-response hover language used
+         across the suite for anything clickable that isn't a button. -->
+    <Style x:Key="Card.Lift" TargetType="Border">
+        <Setter Property="RenderTransform">
+            <Setter.Value>
+                <TranslateTransform Y="0" />
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <EventTrigger RoutedEvent="Loaded">
+                <BeginStoryboard>
+                    <Storyboard>
+                        <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.22">
+                            <DoubleAnimation.EasingFunction>
+                                <CubicEase EasingMode="EaseOut" />
+                            </DoubleAnimation.EasingFunction>
+                        </DoubleAnimation>
+                        <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
+                                          From="10" To="0" Duration="0:0:0.26">
+                            <DoubleAnimation.EasingFunction>
+                                <CubicEase EasingMode="EaseOut" />
+                            </DoubleAnimation.EasingFunction>
+                        </DoubleAnimation>
+                    </Storyboard>
+                </BeginStoryboard>
+            </EventTrigger>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Trigger.EnterActions>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
+                                              To="-2" Duration="0:0:0.15">
+                                <DoubleAnimation.EasingFunction>
+                                    <CubicEase EasingMode="EaseOut" />
+                                </DoubleAnimation.EasingFunction>
+                            </DoubleAnimation>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
+                                              To="0" Duration="0:0:0.2">
+                                <DoubleAnimation.EasingFunction>
+                                    <CubicEase EasingMode="EaseOut" />
+                                </DoubleAnimation.EasingFunction>
+                            </DoubleAnimation>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </Trigger.ExitActions>
+            </Trigger>
         </Style.Triggers>
     </Style>
 
@@ -182,7 +254,13 @@
                             <DropShadowEffect x:Name="Glow" Color="{StaticResource Color.Accent}"
                                                BlurRadius="0" ShadowDepth="0" Opacity="0" />
                         </Border.Effect>
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Grid>
+                            <!-- Luminance lift on hover: a faded-in white tint over whatever the
+                                 background is (works for both glass and gradient buttons), so the
+                                 hover response is a smooth brightening, never a color snap. -->
+                            <Border x:Name="HoverTint" Background="#17FFFFFF" CornerRadius="10" Opacity="0" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}" />
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -192,6 +270,7 @@
                                     <Storyboard>
                                         <DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="BlurRadius" To="14" Duration="0:0:0.15" />
                                         <DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="Opacity" To="0.65" Duration="0:0:0.15" />
+                                        <DoubleAnimation Storyboard.TargetName="HoverTint" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.15" />
                                     </Storyboard>
                                 </BeginStoryboard>
                             </Trigger.EnterActions>
@@ -200,6 +279,7 @@
                                     <Storyboard>
                                         <DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="BlurRadius" To="0" Duration="0:0:0.15" />
                                         <DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.15" />
+                                        <DoubleAnimation Storyboard.TargetName="HoverTint" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2" />
                                     </Storyboard>
                                 </BeginStoryboard>
                             </Trigger.ExitActions>
@@ -319,6 +399,13 @@
 
     <Style TargetType="ScrollViewer">
         <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <!-- Hairline separators at low opacity — heavy divider lines read as clutter on dark glass. -->
+    <Style TargetType="Separator">
+        <Setter Property="Background" Value="{StaticResource Brush.Border}" />
+        <Setter Property="Height" Value="1" />
+        <Setter Property="Opacity" Value="0.4" />
     </Style>
 
     <!-- ============================================================

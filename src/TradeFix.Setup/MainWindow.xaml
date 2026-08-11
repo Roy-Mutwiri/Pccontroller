@@ -5,6 +5,7 @@
         Icon="Assets/AppIcon.ico"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
     <Grid Background="{StaticResource Brush.WindowBackdrop}">
+        <Rectangle Fill="{StaticResource Brush.AmbientGlow}" IsHitTestVisible="False" />
         <Rectangle Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
         <Grid Margin="24">
             <Grid.RowDefinitions>

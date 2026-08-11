@@ -26,6 +26,7 @@
             <RowDefinition Height="180" />
         </Grid.RowDefinitions>
 
+        <Rectangle Grid.RowSpan="3" Fill="{StaticResource Brush.AmbientGlow}" IsHitTestVisible="False" />
         <Rectangle Grid.RowSpan="3" Fill="{StaticResource Brush.GridOverlay}" IsHitTestVisible="False" />
 
         <Border Grid.Row="0" Background="{StaticResource Brush.Surface}">
