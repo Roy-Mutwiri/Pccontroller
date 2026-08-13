@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using TradeFix.Agent.Services;
 using TradeFix.Common.Logging;
+using TradeFix.Network;
 using TradeFix.Network.Auth;
 using TradeFix.Network.Discovery;
 using TradeFix.Shared.Enums;
@@ -92,6 +93,11 @@ public sealed partial class MainViewModel : ObservableObject
         };
         statsTimer.Start();
 
+        // A node whose Tailscale got turned off/signed out just shows Offline forever with no
+        // clue why — quietly reconnect it here (needs no admin), and say so when only a human
+        // sign-in can fix it. Same self-heal the Master runs on its side.
+        _ = EnsureTailscaleHealthyAsync();
+
         if (KnowsMaster)
         {
             // Already paired in a previous session — reconnect automatically, no user action needed.
@@ -102,6 +108,27 @@ public sealed partial class MainViewModel : ObservableObject
             // First launch / after log-out: immediately look for Masters so the operator lands
             // on a "click your Master" list instead of an empty code box.
             _ = DiscoverMastersAsync();
+        }
+    }
+
+    private async Task EnsureTailscaleHealthyAsync()
+    {
+        try
+        {
+            var tailscale = await TailscaleHealth.GetStatusAsync();
+            if (tailscale.State == TailscaleBackendState.Stopped)
+            {
+                await TailscaleHealth.TryStartAsync();
+            }
+            else if (tailscale.State == TailscaleBackendState.NeedsLogin)
+            {
+                _ = _dispatcher.InvokeAsync(() =>
+                    PairingHint = "Tailscale is signed out on this PC — open Tailscale and sign in, then this node can reach the Master.");
+            }
+        }
+        catch
+        {
+            // opportunistic — a failed check must never disturb the agent
         }
     }
 
@@ -186,6 +213,9 @@ public sealed partial class MainViewModel : ObservableObject
         {
             try
             {
+                // While stranded offline, first rule out this node's own Tailscale being the
+                // problem (auto-restarts it when merely stopped) before hunting for a moved Master.
+                await EnsureTailscaleHealthyAsync();
                 var found = await MasterDiscovery.FindAsync(_host.Settings.MasterPort > 0 ? _host.Settings.MasterPort : 8791);
                 var alternative = found.FirstOrDefault(m => m.Host != _host.Settings.MasterHost);
                 _ = _dispatcher.InvokeAsync(() => SuggestedMaster = alternative);

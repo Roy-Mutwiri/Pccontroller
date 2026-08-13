@@ -42,11 +42,13 @@ on the affected PC — it gathers the Master/Agent/Launcher logs and any crash t
 of text, copies it straight to your clipboard, and saves a backup to your Desktop. Paste that
 wherever you're reporting the issue.
 
-**Switched a PC to the Master role and other PCs can't see or connect to it?** That PC needs a
-one-time network setup (Windows blocks apps from accepting connections by default): right-click
-`installer\Enable-MasterNetworking.bat` → **Run as administrator**, approve the prompt, then
-restart the Master app there. Render Nodes never need this — only Master PCs do. The Master shows
-a warning banner whenever this setup is missing.
+**Switched a PC to the Master role and other PCs can't see or connect to it?** The Master app now
+diagnoses and fixes this itself: on startup it detects when Windows is blocking connections and
+runs the one-time fix automatically (just choose **Yes** when Windows asks for permission), it
+turns a switched-off Tailscale back on by itself, and when Tailscale is signed out it shows a
+**Sign in to Tailscale** button. Render Nodes never need any of this — only Master PCs do.
+`installer\Enable-MasterNetworking.bat` (right-click → Run as administrator) remains as a manual
+fallback that does the same thing.
 
 ## Build (developers)
 

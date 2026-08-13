@@ -105,6 +105,45 @@ public sealed class MasterHost : IAsyncDisposable
     private string? _startupWarning;
     public string? StartupWarning => _startupWarning;
 
+    /// <summary>True when binding all interfaces failed (missing URL ACL/firewall setup) and the
+    /// server fell back to localhost-only — meaning render nodes can't reach this Master. The UI's
+    /// network health check keys off this to drive the one-click elevated fix.</summary>
+    public bool IsLocalhostOnly { get; private set; }
+
+    /// <summary>After the elevated URL ACL + firewall fix succeeds, rebinds the running server to
+    /// all interfaces in place — no app restart, captures and state untouched. On failure the
+    /// localhost listener is restored so the app stays usable exactly as before.</summary>
+    public bool TryUpgradeToPublicListener()
+    {
+        if (!IsLocalhostOnly)
+        {
+            return true;
+        }
+
+        try
+        {
+            Server.Restart(bindAllInterfaces: true);
+            IsLocalhostOnly = false;
+            _startupWarning = null;
+            Log.Write(LogCategory.Network, "MasterHost", "Listener upgraded to all interfaces — render nodes can now connect");
+            return true;
+        }
+        catch (HttpListenerException ex)
+        {
+            Log.Write(LogCategory.Error, "MasterHost", "Listener upgrade failed — staying localhost-only", ex);
+            try
+            {
+                Server.Restart(bindAllInterfaces: false);
+            }
+            catch (HttpListenerException restoreEx)
+            {
+                Log.Write(LogCategory.Error, "MasterHost", "Could not restore localhost listener after failed upgrade", restoreEx);
+            }
+
+            return false;
+        }
+    }
+
     public MasterHost(MasterSettings settings)
     {
         Settings = settings;
@@ -289,10 +328,10 @@ public sealed class MasterHost : IAsyncDisposable
         }
         catch (HttpListenerException) when (Settings.BindAllInterfaces)
         {
+            IsLocalhostOnly = true;
             _startupWarning =
-                "This PC isn't set up to accept connections from render nodes yet — they can't find " +
-                "or connect to this Master until that's fixed. One-time fix: in the installer folder, " +
-                "right-click 'Enable-MasterNetworking.bat' → Run as administrator, then restart this app.";
+                "Windows is blocking other PCs from connecting to this Master. One click fixes it — " +
+                "press Fix connections and choose Yes when Windows asks for permission.";
             Log.Write(LogCategory.Error, "MasterHost", _startupWarning);
             try
             {

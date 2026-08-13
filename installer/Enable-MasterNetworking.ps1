@@ -13,11 +13,15 @@ $ErrorActionPreference = "Continue"
 $port = 8791
 $discoveryPort = 8790
 
+# "Everyone" is a localized account name (e.g. "Jeder" on German Windows) - resolve it from the
+# well-known SID S-1-1-0 so the grant works on any display language.
+$everyone = (New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0")).Translate([System.Security.Principal.NTAccount]).Value
+
 Write-Host "Reserving control-server URLs for port $port..." -ForegroundColor Cyan
 foreach ($path in @("ws", "assets", "media", "audio")) {
     $url = "http://+:$port/$path/"
     netsh http delete urlacl url=$url | Out-Null
-    netsh http add urlacl url=$url user=Everyone | Out-Null
+    netsh http add urlacl url=$url user="$everyone" | Out-Null
     Write-Host "  reserved $url"
 }
 

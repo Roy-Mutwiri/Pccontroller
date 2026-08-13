@@ -76,6 +76,46 @@ public sealed class MasterServer(
         log?.Write(new LogEntry(DateTimeOffset.UtcNow, LogCategory.Network, "MasterServer", $"Listening on port {port}"));
     }
 
+    /// <summary>
+    /// Tears down the current HttpListener and starts a fresh one on the same port — the in-place
+    /// upgrade path from localhost-only fallback to LAN-facing after the operator grants the
+    /// one-click network fix (URL ACLs + firewall), so nodes can connect without an app restart.
+    /// Only meaningful while localhost-only, where no remote session exists to disturb. Throws
+    /// <see cref="System.Net.HttpListenerException"/> if the new binding still isn't allowed; the
+    /// caller must fall back (see MasterHost.TryUpgradeToPublicListener).
+    /// </summary>
+    public void Restart(bool bindAllInterfaces)
+    {
+        if (_listener is null)
+        {
+            throw new InvalidOperationException("Server was never started.");
+        }
+
+        _cts?.Cancel();
+        try
+        {
+            _listener.Close();
+        }
+        catch
+        {
+            // tearing down a possibly-faulted listener — nothing useful to do with a failure here
+        }
+
+        try
+        {
+            _acceptLoop?.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // accept loop observed the cancellation/close as an exception — expected during teardown
+        }
+
+        _listener = null;
+        _cts = null;
+        _acceptLoop = null;
+        Start(Port, bindAllInterfaces);
+    }
+
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)

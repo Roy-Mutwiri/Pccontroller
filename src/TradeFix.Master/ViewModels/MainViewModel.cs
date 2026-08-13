@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using TradeFix.Common.Logging;
 using TradeFix.Master.Services;
+using TradeFix.Network;
 using TradeFix.Network.Auth;
 using TradeFix.Protocol;
 using TradeFix.Shared.Enums;
@@ -45,13 +46,32 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _serverSummary = string.Empty;
     [ObservableProperty] private SourceItemViewModel? _selectedSource;
 
+    /// <summary>Label of the warning banner's action button; null hides the button (warnings with
+    /// no clickable remedy, e.g. a port conflict). Set alongside <see cref="StartupWarning"/> by
+    /// the network health check.</summary>
+    [ObservableProperty] private string? _networkFixLabel;
+    [ObservableProperty] private bool _isFixingNetwork;
+
+    private enum NetworkIssue { None, WindowsBlocking, TailscaleSignedOut, TailscaleUnreachable, PortConflict }
+    private NetworkIssue _networkIssue;
+    private bool _healthCheckRunning;
+
     public MainViewModel(MasterHost host, Dispatcher dispatcher)
     {
         _host = host;
         _dispatcher = dispatcher;
 
-        StartupWarning = host.StartupWarning;
         ServerSummary = $"{host.Settings.ServerName}  ·  port {host.Server.Port}";
+
+        // Self-healing network setup: detect what's blocking nodes from reaching this Master
+        // (Windows URL ACL/firewall, Tailscale off or signed out, no internet), fix what's
+        // fixable without a human, and reduce the rest to one button. The startup pass auto-runs
+        // the elevated fix so a fresh Master PC works after a single UAC "Yes"; the timer keeps
+        // watching so e.g. someone quitting Tailscale mid-show surfaces (and heals) within seconds.
+        _ = RunNetworkHealthCheckAsync(autoFixWindows: true);
+        var healthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        healthTimer.Tick += (_, _) => _ = RunNetworkHealthCheckAsync(autoFixWindows: false);
+        healthTimer.Start();
 
         var selfInfo = new NodeInfo
         {
@@ -129,6 +149,151 @@ public sealed partial class MainViewModel : ObservableObject
 
         _sceneCount = host.Project.Scenes.Count;
         RebuildFromProject();
+    }
+
+    /// <summary>One pass of the network self-check. Order matters: a blocked listener (nodes can't
+    /// connect at all) outranks Tailscale problems (only cross-network nodes affected). A stopped
+    /// Tailscale is reconnected silently here — no banner, no clicks — because <c>tailscale up</c>
+    /// needs no elevation; only sign-in genuinely requires the operator.</summary>
+    private async Task RunNetworkHealthCheckAsync(bool autoFixWindows)
+    {
+        if (_healthCheckRunning || IsFixingNetwork)
+        {
+            return;
+        }
+
+        _healthCheckRunning = true;
+        try
+        {
+            if (_host.StartupWarning is { } hostWarning && !_host.IsLocalhostOnly)
+            {
+                // Port conflict etc. — informational; no button can fix a second running Master.
+                _networkIssue = NetworkIssue.PortConflict;
+                StartupWarning = hostWarning;
+                NetworkFixLabel = null;
+                return;
+            }
+
+            if (_host.IsLocalhostOnly)
+            {
+                _networkIssue = NetworkIssue.WindowsBlocking;
+                StartupWarning = _host.StartupWarning;
+                NetworkFixLabel = "Fix connections";
+                if (autoFixWindows)
+                {
+                    _healthCheckRunning = false;
+                    await FixNetworkAsync();
+                }
+
+                return;
+            }
+
+            var tailscale = await TailscaleHealth.GetStatusAsync();
+            if (tailscale.State == TailscaleBackendState.Stopped)
+            {
+                if (await TailscaleHealth.TryStartAsync())
+                {
+                    tailscale = await TailscaleHealth.GetStatusAsync();
+                    if (tailscale.State == TailscaleBackendState.Running)
+                    {
+                        ShowToast("Reconnected Tailscale — nodes on other networks can reach this Master again", positive: true);
+                    }
+                }
+            }
+
+            switch (tailscale.State)
+            {
+                case TailscaleBackendState.NeedsLogin:
+                    _networkIssue = NetworkIssue.TailscaleSignedOut;
+                    StartupWarning =
+                        "Tailscale (the service that connects PCs on different networks) is signed out on this PC — " +
+                        "render nodes elsewhere can't reach this Master until it's signed in.";
+                    NetworkFixLabel = "Sign in to Tailscale";
+                    break;
+                case TailscaleBackendState.Stopped:
+                    _networkIssue = NetworkIssue.TailscaleUnreachable;
+                    StartupWarning =
+                        "Tailscale is turned off on this PC and couldn't be started — render nodes on other " +
+                        "networks can't reach this Master.";
+                    NetworkFixLabel = "Try again";
+                    break;
+                case TailscaleBackendState.Running when !tailscale.SelfOnline:
+                    _networkIssue = NetworkIssue.TailscaleUnreachable;
+                    StartupWarning =
+                        "This PC doesn't seem to be connected to the internet — render nodes on other networks " +
+                        "can't reach it. Check the Wi-Fi/network connection.";
+                    NetworkFixLabel = "Check again";
+                    break;
+                default:
+                    // Running and online, or Tailscale simply not installed (fine for same-LAN
+                    // setups; the installer already points cross-network users at it).
+                    if (_networkIssue != NetworkIssue.None)
+                    {
+                        ShowToast("Network is healthy — nodes can reach this Master", positive: true);
+                    }
+
+                    _networkIssue = NetworkIssue.None;
+                    StartupWarning = null;
+                    NetworkFixLabel = null;
+                    break;
+            }
+        }
+        catch
+        {
+            // the health check must never take the app down — worst case the banner is stale 20s
+        }
+        finally
+        {
+            _healthCheckRunning = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task FixNetworkAsync()
+    {
+        if (IsFixingNetwork)
+        {
+            return;
+        }
+
+        IsFixingNetwork = true;
+        try
+        {
+            switch (_networkIssue)
+            {
+                case NetworkIssue.WindowsBlocking:
+                    var fixApplied = await MasterNetworkSetup.RunElevatedAsync(
+                        _host.Settings.ControlPort, TradeFix.Network.Discovery.DiscoveryProtocol.Port);
+                    if (fixApplied && _host.TryUpgradeToPublicListener())
+                    {
+                        _networkIssue = NetworkIssue.None;
+                        StartupWarning = null;
+                        NetworkFixLabel = null;
+                        ShowToast("Connections enabled — render nodes can now find this Master", positive: true);
+                    }
+                    else if (!fixApplied)
+                    {
+                        StartupWarning =
+                            "Windows permission wasn't granted, so other PCs still can't connect. " +
+                            "Press Fix connections and choose Yes when Windows asks.";
+                    }
+
+                    break;
+                case NetworkIssue.TailscaleSignedOut:
+                    TailscaleHealth.OpenLoginFlow();
+                    ShowToast("Sign in to Tailscale in the browser window that just opened", positive: true);
+                    break;
+            }
+        }
+        finally
+        {
+            IsFixingNetwork = false;
+        }
+
+        if (_networkIssue is NetworkIssue.TailscaleUnreachable or NetworkIssue.None)
+        {
+            await RunNetworkHealthCheckAsync(autoFixWindows: false);
+        }
     }
 
     private void RebuildFromProject()
