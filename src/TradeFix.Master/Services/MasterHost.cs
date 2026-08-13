@@ -10,6 +10,7 @@ using TradeFix.Database.Migrations;
 using TradeFix.Database.Repositories;
 using TradeFix.Network;
 using TradeFix.Network.Auth;
+using TradeFix.Network.Discovery;
 using TradeFix.Network.Media;
 using TradeFix.Network.Server;
 using TradeFix.Network.Simulation;
@@ -72,6 +73,10 @@ public sealed class MasterHost : IAsyncDisposable
 
     private readonly object _adaptiveLock = new();
     private readonly Dictionary<string, AdaptiveEncodingController> _adaptiveControllers = new();
+
+    /// <summary>Answers LAN discovery probes with this Master's name so unpaired nodes can find
+    /// it with zero typing (see DiscoveryBeacon / MasterDiscovery). Best-effort.</summary>
+    private DiscoveryBeacon? _discoveryBeacon;
 
     public MasterSettings Settings { get; }
     public LogBus Log { get; } = new();
@@ -314,6 +319,17 @@ public sealed class MasterHost : IAsyncDisposable
         }
 
         Log.Write(LogCategory.Info, "MasterHost", $"Master started on port {Settings.ControlPort}");
+
+        try
+        {
+            _discoveryBeacon = new DiscoveryBeacon(Settings.ServerName, Settings.ControlPort, Log);
+        }
+        catch (Exception ex)
+        {
+            // A firewalled/occupied UDP port only disables same-LAN auto-discovery — Tailscale
+            // probing and connect codes still work, so log and continue.
+            Log.Write(LogCategory.Network, "MasterHost", "LAN discovery beacon unavailable — nodes can still connect via Tailscale discovery or a connect code", ex);
+        }
     }
 
     /// <summary>Starts a live capture — either one specific app/window (pass <paramref name="window"/>,
@@ -663,6 +679,7 @@ public sealed class MasterHost : IAsyncDisposable
         // Stop the restart triggers before tearing captures down, so nothing races the cleanup
         // below into starting a fresh capture/encoder mid-shutdown.
         MediaHub.FrameDropped -= OnVideoFrameDropped;
+        _discoveryBeacon?.Dispose();
         await _broadcastTimer.DisposeAsync();
 
         lock (_capturesLock)

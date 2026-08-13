@@ -26,6 +26,10 @@ public sealed class NodeSession(
     public string? NodeId { get; private set; }
     public string? RemoteAddress { get; set; }
 
+    /// <summary>Operator-approval hook for code-less join requests (see MasterServer.JoinApprover).
+    /// Null → code-less requests are rejected like any bad code.</summary>
+    public Func<string, string, Task<bool>>? JoinApprover { get; set; }
+
     /// <summary>Fires once, right after this session becomes authenticated (fresh pairing or a
     /// reconnect's re-auth) — the hook point for sending it a full state resync.</summary>
     public event Action<NodeSession>? Ready;
@@ -106,7 +110,42 @@ public sealed class NodeSession(
             return;
         }
 
-        if (!pairingCodes.TryConsume(request.PairingCode, DateTimeOffset.UtcNow))
+        // An EMPTY code is a deliberate "please ask the operator" join request from an Agent that
+        // discovered this Master by name (zero-typing pairing — see MasterDiscovery). It's only
+        // honored when the app wired up an approver; approval replaces the code as the
+        // authorization step, so security stays operator-in-the-loop either way.
+        if (string.IsNullOrEmpty(request.PairingCode) && JoinApprover is not null)
+        {
+            log?.Write(new LogEntry(DateTimeOffset.UtcNow, LogCategory.Node, "NodeSession",
+                $"Join request from '{request.NodeName}' ({RemoteAddress}) — waiting for operator approval"));
+
+            bool approved;
+            try
+            {
+                var decision = JoinApprover(request.NodeName, RemoteAddress ?? "unknown");
+                var timeout = Task.Delay(TimeSpan.FromSeconds(60), cancellationToken);
+                approved = await Task.WhenAny(decision, timeout) == decision && await decision;
+            }
+            catch (Exception)
+            {
+                approved = false;
+            }
+
+            if (!approved)
+            {
+                await transport.SendAsync(
+                    Envelope.Create(CommandType.PairResponse, new PairResponsePayload
+                    {
+                        Approved = false,
+                        Reason = "The Master's operator did not approve the request."
+                    }),
+                    cancellationToken);
+                log?.Write(new LogEntry(DateTimeOffset.UtcNow, LogCategory.Node, "NodeSession",
+                    $"Join request from '{request.NodeName}' ({RemoteAddress}) was declined or timed out"));
+                return;
+            }
+        }
+        else if (!pairingCodes.TryConsume(request.PairingCode, DateTimeOffset.UtcNow))
         {
             await transport.SendAsync(
                 Envelope.Create(CommandType.PairResponse, new PairResponsePayload

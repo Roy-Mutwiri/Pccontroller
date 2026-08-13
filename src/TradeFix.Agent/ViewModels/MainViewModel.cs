@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using TradeFix.Agent.Services;
 using TradeFix.Common.Logging;
 using TradeFix.Network.Auth;
+using TradeFix.Network.Discovery;
 using TradeFix.Shared.Enums;
 
 namespace TradeFix.Agent.ViewModels;
@@ -31,6 +32,29 @@ public sealed partial class MainViewModel : ObservableObject
 
     private long _lastVideoBytes;
     private long _lastVideoFrames;
+
+    // ---- Zero-typing pairing (see TradeFix.Network.Discovery) -------------------------------
+    // Operators should never read or type an IP: unpaired nodes search for Masters by name and
+    // join with one click; the Master's operator clicks Allow. Connect codes stay available
+    // behind "enter a connect code instead" for edge cases discovery can't reach.
+
+    public ObservableCollection<DiscoveredMaster> FoundMasters { get; } = [];
+
+    [ObservableProperty] private bool _isDiscovering;
+    [ObservableProperty] private bool _searchCameUpEmpty;
+    [ObservableProperty] private bool _showCodeEntry;
+
+    /// <summary>Context line shown in the Pairing-state panel — "waiting for approval on X"
+    /// for one-click joins vs the enter-a-code guidance for the manual flow.</summary>
+    [ObservableProperty] private string? _pairingHint;
+
+    /// <summary>Auto-heal: when this node's saved Master is unreachable but discovery finds a
+    /// live Master elsewhere on the network, this drives a "connect to that one instead?"
+    /// banner — the fix for a node stranded on a Master that moved to another PC.</summary>
+    [ObservableProperty] private DiscoveredMaster? _suggestedMaster;
+
+    private int _ticksSinceHealProbe;
+    private bool _healProbeRunning;
 
     public ObservableCollection<string> RecentLogLines { get; } = [];
 
@@ -61,7 +85,11 @@ public sealed partial class MainViewModel : ObservableObject
         host.LogSink.EntryAdded += OnLogEntryAdded;
 
         var statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        statsTimer.Tick += (_, _) => RefreshVideoStats();
+        statsTimer.Tick += (_, _) =>
+        {
+            RefreshVideoStats();
+            TickAutoHealProbe();
+        };
         statsTimer.Start();
 
         if (KnowsMaster)
@@ -69,6 +97,108 @@ public sealed partial class MainViewModel : ObservableObject
             // Already paired in a previous session — reconnect automatically, no user action needed.
             BeginConnect(host.Settings, autoSubmitCode: null);
         }
+        else
+        {
+            // First launch / after log-out: immediately look for Masters so the operator lands
+            // on a "click your Master" list instead of an empty code box.
+            _ = DiscoverMastersAsync();
+        }
+    }
+
+    [RelayCommand]
+    private async Task DiscoverMastersAsync()
+    {
+        if (IsDiscovering)
+        {
+            return;
+        }
+
+        IsDiscovering = true;
+        SearchCameUpEmpty = false;
+        try
+        {
+            var found = await MasterDiscovery.FindAsync(_host.Settings.MasterPort > 0 ? _host.Settings.MasterPort : 8791);
+            FoundMasters.Clear();
+            foreach (var master in found)
+            {
+                FoundMasters.Add(master);
+            }
+
+            SearchCameUpEmpty = FoundMasters.Count == 0;
+        }
+        finally
+        {
+            IsDiscovering = false;
+        }
+    }
+
+    /// <summary>One-click join: dial the chosen Master and send a code-less join request — the
+    /// Master's operator sees an Allow/Deny prompt, and nobody types anything anywhere.</summary>
+    [RelayCommand]
+    private void JoinMaster(DiscoveredMaster master)
+    {
+        PairingHint = $"Asking \"{master.Name}\" for permission — on the Master PC, click Allow.";
+        var settings = new AgentSettings { MasterHost = master.Host, MasterPort = master.Port, NodeName = NodeName };
+        BeginConnect(settings, autoSubmitCode: string.Empty);
+    }
+
+    /// <summary>The auto-heal banner's action: abandon the unreachable saved Master and join the
+    /// discovered one (fresh pairing, operator approval on the new Master).</summary>
+    [RelayCommand]
+    private async Task ConnectToSuggestedAsync()
+    {
+        if (SuggestedMaster is not { } target)
+        {
+            return;
+        }
+
+        SuggestedMaster = null;
+        await _host.LogoutAsync();
+        _hasProvenPairing = false;
+        OnPropertyChanged(nameof(KnowsMaster));
+        JoinMaster(target);
+    }
+
+    /// <summary>Every ~45s while paired-but-offline, quietly look around: if the saved Master is
+    /// gone but a live one answers elsewhere (the "Master moved to a different PC" scenario),
+    /// offer it — instead of silently reconnect-looping at a dead address forever.</summary>
+    private void TickAutoHealProbe()
+    {
+        if (!KnowsMaster || State != NodeConnectionState.Offline)
+        {
+            _ticksSinceHealProbe = 0;
+            if (State is NodeConnectionState.Online or NodeConnectionState.Synced)
+            {
+                SuggestedMaster = null;
+            }
+
+            return;
+        }
+
+        if (++_ticksSinceHealProbe < 45 || _healProbeRunning)
+        {
+            return;
+        }
+
+        _ticksSinceHealProbe = 0;
+        _healProbeRunning = true;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var found = await MasterDiscovery.FindAsync(_host.Settings.MasterPort > 0 ? _host.Settings.MasterPort : 8791);
+                var alternative = found.FirstOrDefault(m => m.Host != _host.Settings.MasterHost);
+                _ = _dispatcher.InvokeAsync(() => SuggestedMaster = alternative);
+            }
+            catch
+            {
+                // probing is opportunistic — a failure just means no suggestion this round
+            }
+            finally
+            {
+                _healProbeRunning = false;
+            }
+        });
     }
 
     private void RefreshVideoStats()

@@ -106,6 +106,22 @@ public sealed partial class MainViewModel : ObservableObject
                 : null;
         });
 
+        // Zero-typing pairing: an unpaired node that discovered this Master sends a code-less
+        // join request; the operator just clicks Allow here. Codes stay as the manual fallback.
+        host.Server.JoinApprover = (nodeName, remoteAddress) =>
+        {
+            var decision = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _ = _dispatcher.InvokeAsync(() =>
+            {
+                var allow = System.Windows.MessageBox.Show(
+                    $"\"{nodeName}\" wants to join this broadcast as a render node.\n\nAllow it to connect?",
+                    "TradeFix Broadcast — New Node", System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Question) == System.Windows.MessageBoxResult.Yes;
+                decision.TrySetResult(allow);
+            });
+            return decision.Task;
+        };
+
         foreach (var entry in host.LogSink.Snapshot().TakeLast(50))
         {
             RecentLogLines.Add(Format(entry));

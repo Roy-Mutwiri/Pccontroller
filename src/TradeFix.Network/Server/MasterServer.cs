@@ -40,6 +40,13 @@ public sealed class MasterServer(
     /// point for pushing it a full state resync (e.g. the current scene's sources).</summary>
     public event Action<NodeSession>? SessionReady;
 
+    /// <summary>Decides code-less join requests (a PairRequest with an empty pairing code, sent
+    /// by an Agent that discovered this Master — see MasterDiscovery). Given (nodeName,
+    /// remoteAddress), returns whether the operator approved. Null (the default) means code-less
+    /// joins are rejected, preserving the codes-only behavior. Set by the Master app, which shows
+    /// the operator an Allow/Deny prompt.</summary>
+    public Func<string, string, Task<bool>>? JoinApprover { get; set; }
+
     /// <summary>
     /// Starts listening for Agent connections. Binding to all interfaces (the LAN-facing default)
     /// requires either an elevated process or a one-time URL ACL reservation on Windows —
@@ -94,6 +101,20 @@ public sealed class MasterServer(
 
     private async Task HandleConnectionAsync(HttpListenerContext context, CancellationToken cancellationToken)
     {
+        if (string.Equals(context.Request.Url?.AbsolutePath, "/assets/discover", StringComparison.OrdinalIgnoreCase))
+        {
+            // Identity endpoint for zero-typing discovery (MasterDiscovery probes candidate hosts
+            // here). Lives under /assets/ deliberately: adding a new URL prefix would require a
+            // new URL ACL reservation on locked-down machines, silently breaking existing installs.
+            var identity = System.Text.Json.JsonSerializer.Serialize(new { app = "tradefix-master", name = serverName, version = appVersion });
+            var bytes = System.Text.Encoding.UTF8.GetBytes(identity);
+            context.Response.ContentType = "application/json";
+            context.Response.ContentLength64 = bytes.Length;
+            context.Response.OutputStream.Write(bytes);
+            context.Response.Close();
+            return;
+        }
+
         if (context.Request.Url?.AbsolutePath.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase) == true)
         {
             ServeAsset(context);
@@ -123,7 +144,8 @@ public sealed class MasterServer(
         var transport = new WebSocketMessageTransport(wsContext.WebSocket);
         var session = new NodeSession(transport, registry, pairedNodes, pairingCodes, serverName, appVersion, log)
         {
-            RemoteAddress = context.Request.RemoteEndPoint?.Address.ToString()
+            RemoteAddress = context.Request.RemoteEndPoint?.Address.ToString(),
+            JoinApprover = JoinApprover
         };
         session.Ready += s => SessionReady?.Invoke(s);
 
