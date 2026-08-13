@@ -575,15 +575,19 @@ public sealed class MasterHost : IAsyncDisposable
             // reset their decoders (no-op when there are none, e.g. a brand-new source).
             _ = MediaHub.BroadcastFrameAsync(sourceId, H264StreamProtocol.RestartMarker, CancellationToken.None, neverDrop: true);
 
-            var previewInterval = Math.Max(1, fps);
             var frameCounter = 0;
             capture.RawFrameCaptured += async (bgra, width, height) =>
             {
-                // Self-preview at ~1fps: there's no JPEG anywhere in this pipeline to reuse, and
-                // each BMP wrap is a full uncompressed frame copy (~33MB at 4K) — at several per
-                // second that's hundreds of MB/s of pure allocation churn for what is only a
-                // monitoring thumbnail on the Master's own canvas. Remote nodes get full-rate
-                // H.264 regardless; this only throttles the local preview.
+                // Self-preview rate: there's no JPEG anywhere in this pipeline to reuse, and each
+                // BMP wrap is a full uncompressed frame copy (~33MB at 4K), so previewing every
+                // frame is pure allocation churn. But the original ~1fps throttle made the
+                // Master's own canvas look broken-laggy to the operator ("I see lags on video" —
+                // while nodes were actually receiving full rate). Scale the preview rate to the
+                // frame size instead: ~8fps up to 1080p-ish (8MB/frame), ~3fps above that —
+                // smooth enough to read as live, still far from every-frame churn. Remote nodes
+                // get full-rate H.264 regardless; this only affects the local preview.
+                var previewFps = (long)width * height > 2_100_000 ? 3 : 8;
+                var previewInterval = Math.Max(1, fps / previewFps);
                 if (LocalCaptureFrame is not null && frameCounter++ % previewInterval == 0)
                 {
                     LocalCaptureFrame.Invoke(sourceId, BgraBmp.Encode(bgra, width, height));

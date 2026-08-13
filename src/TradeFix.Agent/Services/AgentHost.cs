@@ -629,10 +629,15 @@ public sealed class AgentHost : IAsyncDisposable
                     continue; // malformed/truncated message — skip rather than play garbage
                 }
 
-                // Drift guard: if playback has fallen far behind (buffer near its 2s cap —
-                // e.g. after the PC slept or the device stalled), reset to live rather than
-                // playing seconds behind the video forever.
-                if (bufferedWaveProvider.BufferedDuration > TimeSpan.FromSeconds(1))
+                // Drift guard: chunks arrive at exactly real-time rate, so any backlog that ever
+                // accumulates (network jitter batching chunks, a UI stall, the PC sleeping) NEVER
+                // drains on its own — playback just runs permanently that far behind. The old 1s
+                // threshold let sound settle ~1s late, which reads as broken lip-sync now that
+                // same-LAN video is near-instant. 350ms keeps a healthy jitter cushion while
+                // capping standing audio delay at ~0.5s worst (350ms buffer + 150ms WaveOut);
+                // the reset itself skips at most a third of a second — a barely-audible blip
+                // that buys back sync for good.
+                if (bufferedWaveProvider.BufferedDuration > TimeSpan.FromMilliseconds(350))
                 {
                     bufferedWaveProvider.ClearBuffer();
                     gapFiller.Reset();
