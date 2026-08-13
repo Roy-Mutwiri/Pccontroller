@@ -7,7 +7,7 @@
         xmlns:conv="clr-namespace:TradeFix.Agent.Converters"
         xmlns:vm="clr-namespace:TradeFix.Agent.ViewModels"
         mc:Ignorable="d"
-        Title="TradeFix Render Agent" Height="640" Width="520" MinHeight="560" MinWidth="460"
+        Title="TradeFix Render Agent" Height="720" Width="520" MinHeight="560" MinWidth="460"
         Icon="Assets/AppIcon.ico"
         WindowStartupLocation="Manual"
         d:DataContext="{d:DesignInstance vm:MainViewModel}">
@@ -40,7 +40,12 @@
             </Grid>
         </Border>
 
-        <StackPanel Grid.Row="1" Margin="20">
+        <!-- Scrollable: the status card grew (action buttons, live stats), and on a short
+             window the Connect panel's button was clipped below the fixed logs row with no way
+             to reach it — a node literally couldn't pair. Scrolling is the fallback; the taller
+             default height means it rarely engages. -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="20">
 
             <Border Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
                     BorderThickness="1" CornerRadius="10" Padding="18">
@@ -109,7 +114,11 @@
                                Style="{StaticResource Text.Secondary}" TextWrapping="Wrap" Margin="0,0,0,10" />
 
                     <TextBox Text="{Binding ConnectCodeInput, UpdateSourceTrigger=PropertyChanged}"
-                             FontFamily="Consolas" FontSize="16" Margin="0,0,0,6" Padding="8" />
+                             FontFamily="Consolas" FontSize="16" Margin="0,0,0,6" Padding="8">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Enter" Command="{Binding ConnectWithCodeCommand}" />
+                        </TextBox.InputBindings>
+                    </TextBox>
                     <TextBlock Text="{Binding ConnectCodeError}" Foreground="{StaticResource Brush.Danger}"
                                TextWrapping="Wrap" Margin="0,0,0,8"
                                Visibility="{Binding ConnectCodeError, Converter={StaticResource NullToVisibility}}" />
@@ -133,13 +142,18 @@
                 <StackPanel>
                     <TextBlock Text="Waiting for a pairing code. If this doesn't clear on its own within a few seconds, get a fresh code from the Master and enter it here:" TextWrapping="Wrap" />
                     <TextBox Text="{Binding PairingCodeInput, UpdateSourceTrigger=PropertyChanged}"
-                             FontFamily="Consolas" FontSize="18" Margin="0,10,0,10" Padding="8" />
+                             FontFamily="Consolas" FontSize="18" Margin="0,10,0,10" Padding="8">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Enter" Command="{Binding SubmitPairingCodeCommand}" />
+                        </TextBox.InputBindings>
+                    </TextBox>
                     <Button Content="Submit Code" Style="{StaticResource Button.Primary}"
                             Command="{Binding SubmitPairingCodeCommand}" HorizontalAlignment="Left" />
                 </StackPanel>
             </Border>
 
         </StackPanel>
+        </ScrollViewer>
 
         <Border Grid.Row="2" Background="{StaticResource Brush.Surface}">
             <Grid>
