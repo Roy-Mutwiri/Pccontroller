@@ -37,14 +37,20 @@ public partial class MainWindow : Window
         DataContext = viewModel;
 
         // Keep the log panel pinned to the newest entry — an append-only log that never scrolls
-        // shows permanently stale lines after the first screenful.
+        // shows permanently stale lines after the first screenful. The scroll is DEFERRED via
+        // the dispatcher: ScrollIntoView inline in a CollectionChanged handler forces container
+        // generation before the ListBox has processed that same change, desyncing the
+        // ItemContainerGenerator and crashing with "An ItemsControl is inconsistent with its
+        // items source" (hit for real on a render node when connection-failure entries landed in
+        // a burst — the Agent has the same fix).
         viewModel.RecentLogLines.CollectionChanged += (_, _) =>
-        {
-            if (LogList.Items.Count > 0)
+            Dispatcher.InvokeAsync(() =>
             {
-                LogList.ScrollIntoView(LogList.Items[LogList.Items.Count - 1]);
-            }
-        };
+                if (LogList.Items.Count > 0)
+                {
+                    LogList.ScrollIntoView(LogList.Items[LogList.Items.Count - 1]);
+                }
+            }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     private MainViewModel ViewModel => (MainViewModel)DataContext;
