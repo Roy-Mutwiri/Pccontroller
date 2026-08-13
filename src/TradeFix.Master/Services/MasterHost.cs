@@ -290,10 +290,9 @@ public sealed class MasterHost : IAsyncDisposable
         catch (HttpListenerException) when (Settings.BindAllInterfaces)
         {
             _startupWarning =
-                $"Could not bind to all network interfaces on port {Settings.ControlPort} " +
-                "(Windows requires either Administrator elevation or a one-time URL ACL reservation — " +
-                "see docs/NODE_SYSTEM.md). Falling back to localhost-only; render nodes on other PCs " +
-                "will not be able to connect until this is resolved.";
+                "This PC isn't set up to accept connections from render nodes yet — they can't find " +
+                "or connect to this Master until that's fixed. One-time fix: in the installer folder, " +
+                "right-click 'Enable-MasterNetworking.bat' → Run as administrator, then restart this app.";
             Log.Write(LogCategory.Error, "MasterHost", _startupWarning);
             try
             {

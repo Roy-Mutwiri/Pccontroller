@@ -42,6 +42,12 @@ on the affected PC — it gathers the Master/Agent/Launcher logs and any crash t
 of text, copies it straight to your clipboard, and saves a backup to your Desktop. Paste that
 wherever you're reporting the issue.
 
+**Switched a PC to the Master role and other PCs can't see or connect to it?** That PC needs a
+one-time network setup (Windows blocks apps from accepting connections by default): right-click
+`installer\Enable-MasterNetworking.bat` → **Run as administrator**, approve the prompt, then
+restart the Master app there. Render Nodes never need this — only Master PCs do. The Master shows
+a warning banner whenever this setup is missing.
+
 ## Build (developers)
 
 Requires the .NET 8 SDK.
