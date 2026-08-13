@@ -156,6 +156,22 @@ public sealed class H264VideoEncoder : IDisposable
             CreateNoWindow = true
         };
 
+        // CRF alone lets bitrate spike enormously on motion/scene changes (a window switch can
+        // emit multi-hundred-KB bursts), and on a slow link every spike becomes a burst of queued
+        // latency — the periodic "it suddenly lags" pattern. A VBV cap (-maxrate/-bufsize) keyed
+        // off the frame size turns those spikes into brief extra compression instead: latency
+        // stays flat, quality dips for a moment. Fast links rarely touch the cap.
+        var pixels = (long)width * height;
+        var maxrateKbps = pixels switch
+        {
+            <= 640L * 400 => 900,
+            <= 960L * 600 => 1500,
+            <= 1280L * 800 => 2200,
+            <= 1920L * 1200 => 4000,
+            <= 2560L * 1600 => 7000,
+            _ => 12000
+        };
+
         // -g {fps}: a keyframe every second, so a node that joins mid-stream (or loses bytes to
         // backpressure drops) recovers a clean picture within a second.
         foreach (var arg in new[]
@@ -166,6 +182,7 @@ public sealed class H264VideoEncoder : IDisposable
             "-an",
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-pix_fmt", "yuv420p", "-crf", _crf.ToString(), "-g", _fps.ToString(),
+            "-maxrate", $"{maxrateKbps}k", "-bufsize", $"{maxrateKbps}k",
             "-f", "h264", "pipe:1"
         })
         {

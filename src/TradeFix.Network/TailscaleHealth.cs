@@ -107,6 +107,89 @@ public static class TailscaleHealth
         }
     }
 
+    /// <summary>How this PC's ACTIVE peer connections are being carried: direct (fast) vs bounced
+    /// through a Tailscale relay server (DERP — works everywhere but adds hundreds of ms and
+    /// limited bandwidth; happens when NAT traversal fails on either end). Relayed active peers
+    /// are why "it works but lags badly" — surfaced to the operator instead of left invisible.</summary>
+    public sealed record TailscalePathSummary(int DirectPeers, int RelayedPeers);
+
+    public static async Task<TailscalePathSummary> GetPeerPathsAsync(CancellationToken cancellationToken = default)
+    {
+        var exe = FindExe();
+        if (exe is null)
+        {
+            return new TailscalePathSummary(0, 0);
+        }
+
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = exe,
+                ArgumentList = { "status", "--json" },
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            });
+            if (process is null)
+            {
+                return new TailscalePathSummary(0, 0);
+            }
+
+            var json = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            return ParsePeerPaths(json);
+        }
+        catch
+        {
+            return new TailscalePathSummary(0, 0);
+        }
+    }
+
+    /// <summary>Split out for unit testing against real CLI JSON. A peer counts only while
+    /// Active (traffic currently flowing); CurAddr empty on an active peer means every packet is
+    /// detouring through the relay named in Relay.</summary>
+    public static TailscalePathSummary ParsePeerPaths(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("Peer", out var peers) || peers.ValueKind != JsonValueKind.Object)
+            {
+                return new TailscalePathSummary(0, 0);
+            }
+
+            int direct = 0, relayed = 0;
+            foreach (var peer in peers.EnumerateObject())
+            {
+                var active = peer.Value.TryGetProperty("Active", out var activeElement)
+                    && activeElement.ValueKind == JsonValueKind.True;
+                if (!active)
+                {
+                    continue;
+                }
+
+                var hasDirectAddress = peer.Value.TryGetProperty("CurAddr", out var curAddr)
+                    && curAddr.GetString() is { Length: > 0 };
+                if (hasDirectAddress)
+                {
+                    direct++;
+                }
+                else
+                {
+                    relayed++;
+                }
+            }
+
+            return new TailscalePathSummary(direct, relayed);
+        }
+        catch
+        {
+            return new TailscalePathSummary(0, 0);
+        }
+    }
+
     /// <summary>Reconnects a signed-in-but-stopped Tailscale (someone hit "Disconnect" or the
     /// service came up disconnected). Returns false when it can't — most importantly when the
     /// account is signed out, which only an interactive login fixes.</summary>

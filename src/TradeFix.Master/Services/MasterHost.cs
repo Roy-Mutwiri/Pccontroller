@@ -220,7 +220,7 @@ public sealed class MasterHost : IAsyncDisposable
     {
         AdaptiveEncodingController? controller;
         bool steppedDown;
-        int quality, maxDimension;
+        int quality, maxDimension, fps;
         lock (_adaptiveLock)
         {
             if (!_adaptiveControllers.TryGetValue(sourceId, out controller))
@@ -231,6 +231,7 @@ public sealed class MasterHost : IAsyncDisposable
             steppedDown = controller.RecordDrop(DateTimeOffset.UtcNow);
             quality = controller.CurrentQuality;
             maxDimension = controller.CurrentMaxDimension;
+            fps = controller.CurrentFps;
         }
 
         if (steppedDown)
@@ -241,20 +242,20 @@ public sealed class MasterHost : IAsyncDisposable
             // that's calling it (a guaranteed timeout-length video stall), plus lifecycle
             // mutations on a hot media thread. A thread-pool hop makes the restart safe and
             // keeps the pump moving.
-            _ = Task.Run(() => RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension));
+            _ = Task.Run(() => RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension, fps));
         }
     }
 
     private void TickAdaptiveControllers()
     {
-        List<(string SourceId, int Quality, int MaxDimension)>? toRestart = null;
+        List<(string SourceId, int Quality, int MaxDimension, int Fps)>? toRestart = null;
         lock (_adaptiveLock)
         {
             foreach (var (sourceId, controller) in _adaptiveControllers)
             {
                 if (controller.Tick(DateTimeOffset.UtcNow))
                 {
-                    (toRestart ??= []).Add((sourceId, controller.CurrentQuality, controller.CurrentMaxDimension));
+                    (toRestart ??= []).Add((sourceId, controller.CurrentQuality, controller.CurrentMaxDimension, controller.CurrentFps));
                 }
             }
         }
@@ -264,9 +265,9 @@ public sealed class MasterHost : IAsyncDisposable
             return;
         }
 
-        foreach (var (sourceId, quality, maxDimension) in toRestart)
+        foreach (var (sourceId, quality, maxDimension, fps) in toRestart)
         {
-            RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension);
+            RestartCaptureWithAdaptiveSettings(sourceId, quality, maxDimension, fps);
         }
     }
 
@@ -274,7 +275,7 @@ public sealed class MasterHost : IAsyncDisposable
     /// Config — deliberately separate from <see cref="UpdateCaptureSettings"/>, which is the
     /// explicit-user-edit path and persists to Config so it survives a resync. An automatic,
     /// transient throttle shouldn't silently overwrite what the operator actually configured.</summary>
-    private void RestartCaptureWithAdaptiveSettings(string sourceId, int quality, int maxDimension)
+    private void RestartCaptureWithAdaptiveSettings(string sourceId, int quality, int maxDimension, int fps)
     {
         lock (_capturesLock)
         {
@@ -284,7 +285,6 @@ public sealed class MasterHost : IAsyncDisposable
             }
 
             var targetWindow = existing.TargetWindow;
-            var fps = existing.TargetFps;
             existing.Stop();
             existing.Dispose();
             StartCapture(sourceId, targetWindow, fps, maxDimension, quality);
@@ -298,7 +298,7 @@ public sealed class MasterHost : IAsyncDisposable
 
         AdaptiveSettingsChanged?.Invoke(sourceId, isThrottled, quality, maxDimension);
         Log.Write(LogCategory.Media, "MasterHost",
-            $"Auto-adjusted capture {sourceId} to quality={quality} / {maxDimension}px ({(isThrottled ? "link can't sustain target settings" : "recovered toward target")})");
+            $"Auto-adjusted capture {sourceId} to quality={quality} / {maxDimension}px / {fps} FPS ({(isThrottled ? "link can't sustain target settings" : "recovered toward target")})");
     }
 
     private void FlushDirtyTransforms()
@@ -470,7 +470,7 @@ public sealed class MasterHost : IAsyncDisposable
 
         lock (_adaptiveLock)
         {
-            _adaptiveControllers[source.Id] = new AdaptiveEncodingController(defaultQuality, defaultMaxDimension, DateTimeOffset.UtcNow);
+            _adaptiveControllers[source.Id] = new AdaptiveEncodingController(defaultQuality, defaultMaxDimension, DateTimeOffset.UtcNow, defaultFps);
         }
 
         Log.Write(LogCategory.Media, "MasterHost", $"Started capture '{name}' for source {source.Id}");
@@ -523,11 +523,11 @@ public sealed class MasterHost : IAsyncDisposable
         {
             if (_adaptiveControllers.TryGetValue(sourceId, out var controller))
             {
-                controller.SetTarget(quality, maxDimension, DateTimeOffset.UtcNow);
+                controller.SetTarget(quality, maxDimension, DateTimeOffset.UtcNow, fps);
             }
             else
             {
-                _adaptiveControllers[sourceId] = new AdaptiveEncodingController(quality, maxDimension, DateTimeOffset.UtcNow);
+                _adaptiveControllers[sourceId] = new AdaptiveEncodingController(quality, maxDimension, DateTimeOffset.UtcNow, fps);
             }
         }
 

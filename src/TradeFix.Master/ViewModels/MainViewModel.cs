@@ -57,6 +57,11 @@ public sealed partial class MainViewModel : ObservableObject
     /// invisible locally but silences every node. Null when audio is healthy or unused.</summary>
     [ObservableProperty] private string? _audioWarning;
 
+    /// <summary>Shown while any active node connection is being relayed through a Tailscale DERP
+    /// server (direct NAT traversal failed) — the "everything works but lags by a second+" state
+    /// that is otherwise completely invisible to an operator. Null when paths are direct.</summary>
+    [ObservableProperty] private string? _linkQualityNote;
+
     private enum NetworkIssue { None, WindowsBlocking, TailscaleSignedOut, TailscaleUnreachable, PortConflict }
     private NetworkIssue _networkIssue;
     private bool _healthCheckRunning;
@@ -241,6 +246,20 @@ public sealed partial class MainViewModel : ObservableObject
                     StartupWarning = null;
                     NetworkFixLabel = null;
                     break;
+            }
+
+            if (_networkIssue == NetworkIssue.None && tailscale.State == TailscaleBackendState.Running)
+            {
+                var paths = await TailscaleHealth.GetPeerPathsAsync();
+                LinkQualityNote = paths.RelayedPeers > 0
+                    ? "Connections are taking a slow detour through an internet relay server (a direct link couldn't " +
+                      "be made), so video will lag noticeably even though everything works. For a smooth, low-lag show: " +
+                      "connect the node PCs to the same Wi-Fi/router as this PC if possible."
+                    : null;
+            }
+            else
+            {
+                LinkQualityNote = null;
             }
         }
         catch

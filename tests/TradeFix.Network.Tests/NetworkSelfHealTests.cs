@@ -34,6 +34,30 @@ public sealed class NetworkSelfHealTests : IDisposable
     }
 
     [Fact]
+    public void PeerPaths_CountsOnlyActivePeers_SplitByDirectVsRelayed()
+    {
+        const string json = """
+            {"BackendState":"Running","Peer":{
+                "key1":{"Active":true,"CurAddr":"41.90.10.5:41641","Relay":"nai"},
+                "key2":{"Active":true,"CurAddr":"","Relay":"ams"},
+                "key3":{"Active":false,"CurAddr":"","Relay":"nai"}
+            }}
+            """;
+
+        var paths = TailscaleHealth.ParsePeerPaths(json);
+
+        Assert.Equal(1, paths.DirectPeers);
+        Assert.Equal(1, paths.RelayedPeers); // the inactive relayed peer must not count
+    }
+
+    [Fact]
+    public void PeerPaths_GarbageOrEmptyInput_ReportsZero_NotThrow()
+    {
+        Assert.Equal(new TailscaleHealth.TailscalePathSummary(0, 0), TailscaleHealth.ParsePeerPaths("not json"));
+        Assert.Equal(new TailscaleHealth.TailscalePathSummary(0, 0), TailscaleHealth.ParsePeerPaths("{}"));
+    }
+
+    [Fact]
     public void TailscaleStatus_GarbageInput_ReportsUnknown_NotThrow()
     {
         Assert.Equal(TailscaleBackendState.Unknown, TailscaleHealth.Parse("not json at all").State);

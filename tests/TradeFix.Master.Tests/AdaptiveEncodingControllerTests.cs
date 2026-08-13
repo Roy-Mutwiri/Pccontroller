@@ -190,4 +190,89 @@ public sealed class AdaptiveEncodingControllerTests
         Assert.Equal(100, controller.CurrentQuality);
         Assert.Equal(3840, controller.CurrentMaxDimension);
     }
+
+    /// <summary>Runs RecordDrop in triplets until the controller refuses to step further, i.e.
+    /// simulates a link so slow every setting bottoms out.</summary>
+    private static void DrainToFloors(AdaptiveEncodingController controller, ref DateTimeOffset clock)
+    {
+        for (var i = 0; i < 100; i++)
+        {
+            clock = clock.AddSeconds(1);
+            controller.RecordDrop(clock);
+            controller.RecordDrop(clock.AddMilliseconds(100));
+            var stepped = controller.RecordDrop(clock.AddMilliseconds(200));
+            if (!stepped && controller.CurrentQuality == AdaptiveEncodingController.QualityFloor
+                && controller.CurrentMaxDimension == AdaptiveEncodingController.MaxDimensionFloor
+                && controller.CurrentFps == AdaptiveEncodingController.FpsFloor)
+            {
+                return;
+            }
+        }
+
+        Assert.Fail("controller never reached its floors");
+    }
+
+    [Fact]
+    public void FrameRate_IsTheLastLeverPulled_OnlyAfterQualityAndResolutionFloor()
+    {
+        var controller = new AdaptiveEncodingController(100, 3840, Start, targetFps: 30);
+        var clock = Start;
+
+        // Step down repeatedly; fps must stay untouched until BOTH other floors are hit.
+        while (controller.CurrentQuality > AdaptiveEncodingController.QualityFloor
+               || controller.CurrentMaxDimension > AdaptiveEncodingController.MaxDimensionFloor)
+        {
+            Assert.Equal(30, controller.CurrentFps);
+            clock = clock.AddSeconds(1);
+            controller.RecordDrop(clock);
+            controller.RecordDrop(clock.AddMilliseconds(100));
+            controller.RecordDrop(clock.AddMilliseconds(200));
+        }
+
+        clock = clock.AddSeconds(1);
+        controller.RecordDrop(clock);
+        controller.RecordDrop(clock.AddMilliseconds(100));
+        var steppedFps = controller.RecordDrop(clock.AddMilliseconds(200));
+
+        Assert.True(steppedFps);
+        Assert.Equal(20, controller.CurrentFps); // 30 * 2/3
+    }
+
+    [Fact]
+    public void FullyFloored_RecoversInReverseOrder_FpsThenResolutionThenQuality()
+    {
+        var controller = new AdaptiveEncodingController(100, 3840, Start, targetFps: 30);
+        var clock = Start;
+        DrainToFloors(controller, ref clock);
+
+        // First healthy step-up must restore frame rate before anything else.
+        clock = clock.AddSeconds(13);
+        Assert.True(controller.Tick(clock));
+        Assert.True(controller.CurrentFps > AdaptiveEncodingController.FpsFloor);
+        Assert.Equal(AdaptiveEncodingController.MaxDimensionFloor, controller.CurrentMaxDimension);
+        Assert.Equal(AdaptiveEncodingController.QualityFloor, controller.CurrentQuality);
+
+        // Keep ticking until fully recovered — it must reach the exact original targets.
+        for (var i = 0; i < 100 && controller.IsThrottled; i++)
+        {
+            clock = clock.AddSeconds(13);
+            controller.Tick(clock);
+        }
+
+        Assert.False(controller.IsThrottled);
+        Assert.Equal(30, controller.CurrentFps);
+        Assert.Equal(3840, controller.CurrentMaxDimension);
+        Assert.Equal(100, controller.CurrentQuality);
+    }
+
+    [Fact]
+    public void DefaultFps12_CanStillStepDownToFloor8()
+    {
+        var controller = new AdaptiveEncodingController(100, 3840, Start, targetFps: 12);
+        var clock = Start;
+        DrainToFloors(controller, ref clock);
+
+        Assert.Equal(AdaptiveEncodingController.FpsFloor, controller.CurrentFps);
+        Assert.Equal(8, controller.CurrentFps);
+    }
 }

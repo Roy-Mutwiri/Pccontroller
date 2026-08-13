@@ -24,8 +24,10 @@ public sealed class AdaptiveEncodingController
 {
     public const int QualityFloor = 40;
     public const int MaxDimensionFloor = 640;
+    public const int FpsFloor = 8;
     private const int QualityStep = 15;
     private const double MaxDimensionStepFactor = 0.75;
+    private const double FpsStepFactor = 2.0 / 3.0;
     private static readonly TimeSpan DropWindow = TimeSpan.FromSeconds(3);
     private const int DropsToStepDown = 3;
     private static readonly TimeSpan HealthyPeriodToStepUp = TimeSpan.FromSeconds(12);
@@ -35,28 +37,33 @@ public sealed class AdaptiveEncodingController
 
     public int TargetQuality { get; private set; }
     public int TargetMaxDimension { get; private set; }
+    public int TargetFps { get; private set; }
     public int CurrentQuality { get; private set; }
     public int CurrentMaxDimension { get; private set; }
+    public int CurrentFps { get; private set; }
 
     /// <summary>True once the controller has stepped below the user's configured target at least
     /// once and hasn't fully recovered yet — lets the UI honestly show "auto-reduced" instead of
     /// silently diverging from what the Properties panel says.</summary>
-    public bool IsThrottled => CurrentQuality < TargetQuality || CurrentMaxDimension < TargetMaxDimension;
+    public bool IsThrottled => CurrentQuality < TargetQuality || CurrentMaxDimension < TargetMaxDimension
+        || CurrentFps < TargetFps;
 
-    public AdaptiveEncodingController(int targetQuality, int targetMaxDimension, DateTimeOffset now)
+    public AdaptiveEncodingController(int targetQuality, int targetMaxDimension, DateTimeOffset now, int targetFps = 30)
     {
-        SetTarget(targetQuality, targetMaxDimension, now);
+        SetTarget(targetQuality, targetMaxDimension, now, targetFps);
     }
 
     /// <summary>Call when the user explicitly changes settings (Properties panel Apply) — an
     /// explicit choice should immediately win over any in-progress throttling, not be treated as
     /// something to cautiously step back up to.</summary>
-    public void SetTarget(int quality, int maxDimension, DateTimeOffset now)
+    public void SetTarget(int quality, int maxDimension, DateTimeOffset now, int fps = 30)
     {
         TargetQuality = quality;
         TargetMaxDimension = maxDimension;
+        TargetFps = fps;
         CurrentQuality = quality;
         CurrentMaxDimension = maxDimension;
+        CurrentFps = fps;
         _recentDrops.Clear();
         _lastChangeAt = now;
     }
@@ -118,9 +125,17 @@ public sealed class AdaptiveEncodingController
             CurrentMaxDimension = Math.Max(MaxDimensionFloor, (int)(CurrentMaxDimension * MaxDimensionStepFactor));
             changed = true;
         }
+        else if (CurrentFps > FpsFloor)
+        {
+            // Frame rate is the last lever — a choppier picture beats a late one, and on links
+            // that can't even carry quality-floor 640px (e.g. a relayed path sharing a thin
+            // uplink), halving-ish the frame rate is the only remaining way to stay live.
+            CurrentFps = Math.Max(FpsFloor, (int)(CurrentFps * FpsStepFactor));
+            changed = true;
+        }
         else
         {
-            changed = false; // already at both floors — nothing left to give
+            changed = false; // already at all three floors — nothing left to give
         }
 
         if (changed)
@@ -133,6 +148,13 @@ public sealed class AdaptiveEncodingController
 
     private bool StepUp()
     {
+        // Reverse of step-down: the last thing sacrificed is the first thing restored.
+        if (CurrentFps < TargetFps)
+        {
+            CurrentFps = Math.Min(TargetFps, (int)Math.Ceiling(CurrentFps / FpsStepFactor));
+            return true;
+        }
+
         if (CurrentMaxDimension < TargetMaxDimension)
         {
             CurrentMaxDimension = Math.Min(TargetMaxDimension, (int)(CurrentMaxDimension / MaxDimensionStepFactor));
