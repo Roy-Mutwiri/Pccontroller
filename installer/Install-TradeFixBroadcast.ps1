@@ -71,11 +71,42 @@ foreach ($processName in @("TradeFix.Master", "TradeFix.Agent", "TradeFix.Launch
     Get-Process -Name $processName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
+# Stop-Process returns before the process has actually exited - copying immediately raced the
+# shutdown and failed with "file is being used by another process" on a real reinstall. Wait for
+# the processes to genuinely disappear, then a short settle for Windows to release the mapped
+# DLL file handles.
+$stopDeadline = (Get-Date).AddSeconds(15)
+while ((Get-Date) -lt $stopDeadline) {
+    $stillRunning = Get-Process -Name "TradeFix.Master", "TradeFix.Agent", "TradeFix.Launcher" -ErrorAction SilentlyContinue
+    if (-not $stillRunning) {
+        break
+    }
+    Start-Sleep -Milliseconds 300
+}
+Start-Sleep -Milliseconds 700
+
 Write-Host "Installing to $installRoot ..."
 foreach ($app in $apps) {
     $destination = Join-Path $installRoot $app.Name
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    Copy-Item -Path (Join-Path $app.Source "*") -Destination $destination -Recurse -Force
+
+    # Retry the copy a few times: even after processes exit, antivirus scans or slow handle
+    # release can hold a file briefly. Three spaced attempts covers that without masking a
+    # genuinely stuck file (the final attempt still surfaces the real error).
+    $copied = $false
+    for ($attempt = 1; $attempt -le 3 -and -not $copied; $attempt++) {
+        try {
+            Copy-Item -Path (Join-Path $app.Source "*") -Destination $destination -Recurse -Force -ErrorAction Stop
+            $copied = $true
+        }
+        catch {
+            if ($attempt -eq 3) {
+                throw
+            }
+            Write-Host "  a file was still in use - retrying in 2s (attempt $attempt of 3)..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+        }
+    }
 }
 
 # Copy-Item can carry the Mark-of-the-Web over to the destination on some filesystems  -  unblock
