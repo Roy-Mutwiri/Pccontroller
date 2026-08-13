@@ -130,6 +130,43 @@ public sealed class MediaHubByteBudgetTests
         Assert.Equal(2, sent[1][0]); // only the newest oversized frame survived
     }
 
+    [Fact]
+    public async Task AudioCatchUpBurst_AtProductionBudgetAndChunkSizes_LosesNothing()
+    {
+        // The no-sound chain regression, at the hub link of the chain: a loaded Master's audio
+        // pump emits its full per-tick drain (10 chunks of ~100ms / 4800B each) back-to-back.
+        // With the old budget-0 (strict latest-wins) audio hub, every burst chunk evicted the
+        // previous one while a send was in flight — 900ms of manufactured audio loss per burst on
+        // a healthy link, which downstream became inserted silence and, ultimately, no sound.
+        // The production 48KB budget must hold the entire burst with zero drops, in order.
+        var hub = new MediaHub(subscriberQueueBudgetBytes: 48 * 1024);
+        var socket = new GatedWebSocket();
+        hub.RegisterSubscriber("audio", socket);
+
+        var dropped = 0;
+        hub.FrameDropped += _ => dropped++;
+
+        const int chunkBytes = 4800; // 100ms of 24kHz mono 16-bit PCM, AgentHost's AudioFormat
+        await hub.BroadcastFrameAsync("audio", MakeFrame(0, chunkBytes), CancellationToken.None); // in flight
+        await WaitForSendInProgress(socket);
+        for (byte i = 1; i < 10; i++)
+        {
+            await hub.BroadcastFrameAsync("audio", MakeFrame(i, chunkBytes), CancellationToken.None);
+        }
+
+        Assert.Equal(0, dropped);
+
+        socket.ReleaseSend();
+        await WaitForSentCount(socket, 10);
+
+        var sent = socket.SentFrames;
+        Assert.Equal(10, sent.Count);
+        for (byte i = 0; i < 10; i++)
+        {
+            Assert.Equal(i, sent[i][0]); // every chunk of the burst, in capture order
+        }
+    }
+
     private static byte[] MakeFrame(byte tag, int length)
     {
         var frame = new byte[length];

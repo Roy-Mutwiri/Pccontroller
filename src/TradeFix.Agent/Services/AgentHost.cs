@@ -596,6 +596,7 @@ public sealed class AgentHost : IAsyncDisposable
         _audioPlayer = (player, bufferedWaveProvider);
 
         var gapFiller = new AudioSyncGapFiller(AudioFormat.AverageBytesPerSecond);
+        var driftGuard = new AudioDriftGuard();
 
         Log.Write(LogCategory.Audio, "AgentHost", "Audio subscription connected");
 
@@ -629,16 +630,15 @@ public sealed class AgentHost : IAsyncDisposable
                     continue; // malformed/truncated message — skip rather than play garbage
                 }
 
-                // Drift guard: chunks arrive at exactly real-time rate, so any backlog that ever
-                // accumulates (network jitter batching chunks, a UI stall, the PC sleeping) NEVER
-                // drains on its own — playback just runs permanently that far behind. The old 1s
-                // threshold let sound settle ~1s late, which reads as broken lip-sync now that
-                // same-LAN video is near-instant. 350ms keeps a healthy jitter cushion while
-                // capping standing audio delay at ~0.5s worst (350ms buffer + 150ms WaveOut);
-                // the reset itself skips at most a third of a second — a barely-audible blip
-                // that buys back sync for good.
-                if (bufferedWaveProvider.BufferedDuration > TimeSpan.FromMilliseconds(350))
+                // Standing-lag resync: see AudioDriftGuard for the full reasoning — clears only
+                // when the buffer's floor stays elevated across a whole window (true dead weight
+                // that will never drain), never on the momentary spikes a loaded Master's
+                // catch-up bursts cause. An instantaneous threshold here previously shredded
+                // playback into silence; a too-lazy one parked audio a second behind the video.
+                if (driftGuard.ShouldResync(bufferedWaveProvider.BufferedDuration))
                 {
+                    Log.Write(LogCategory.Audio, "AgentHost",
+                        $"Audio resynced to live (was {bufferedWaveProvider.BufferedDuration.TotalMilliseconds:F0}ms behind)");
                     bufferedWaveProvider.ClearBuffer();
                     gapFiller.Reset();
                 }

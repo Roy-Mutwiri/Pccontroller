@@ -172,10 +172,17 @@ public sealed class MasterHost : IAsyncDisposable
         // budget still passes (evict-then-admit in MediaHub), and the evictions this triggers on
         // slow links are exactly the AdaptiveEncodingController's step-down signal — a tighter
         // budget also makes quality auto-reduction kick in sooner instead of buffering blindly.
-        // Audio uses budget 0 (strict latest-wins) — chunks are independent and timestamped, and
-        // the Agent's AudioSyncGapFiller silence-fills drops.
         MediaHub = new MediaHub(Log, subscriberQueueBudgetBytes: 128 * 1024);
-        AudioHub = new MediaHub(Log);
+        // Audio needs a real (small) budget, NOT strict latest-wins: a loaded Master's audio pump
+        // ticks late and then emits several 100ms chunks back-to-back (its catch-up drain), and
+        // with budget 0 each burst chunk evicted the previous one while the send pump was busy —
+        // manufacturing dropped-audio gaps on a perfectly healthy LAN. Every gap became inserted
+        // silence on the node (AudioSyncGapFiller), which is exactly the standing audio lag and
+        // broken-sound reports from the field. 48KB = 1s of 24kHz mono PCM = a full 10-chunk
+        // catch-up burst (the pump's per-tick drain cap) queues losslessly and flushes in
+        // milliseconds on a LAN, while a genuinely slow link still sheds oldest-first with
+        // bounded (~1s) transport latency.
+        AudioHub = new MediaHub(Log, subscriberQueueBudgetBytes: 48 * 1024);
 
         Server = new MasterServer(Registry, pairedNodes, pairingCodes, settings.ServerName, AppVersion, Log, Assets, MediaHub, AudioHub);
         Server.SessionReady += OnSessionReady;

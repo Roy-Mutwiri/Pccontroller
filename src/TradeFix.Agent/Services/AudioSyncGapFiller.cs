@@ -27,8 +27,12 @@ public sealed class AudioSyncGapFiller
     /// <c>WaveFormat.AverageBytesPerSecond</c>) — used to convert byte counts to durations.</param>
     /// <param name="maxGapToFillMs">Gaps larger than this are treated as a real pause/reconnect
     /// rather than a few dropped chunks, and are not filled with silence (that would mean playing
-    /// several seconds of dead air) — playback simply resyncs to the new position.</param>
-    public AudioSyncGapFiller(int averageBytesPerSecond, int maxGapToFillMs = 3000)
+    /// long dead air) — playback simply resyncs to the new position. Default 400ms: silence
+    /// inserts land in the playback buffer as instant backlog, so any fill meaningfully larger
+    /// than the drift guard's standing-delay tolerance (see AudioDriftGuard) would immediately
+    /// count as drift and get cleared — inserting it is self-defeating. Small fills for a chunk
+    /// or two of genuine loss keep A/V alignment; big holes resync live instead.</param>
+    public AudioSyncGapFiller(int averageBytesPerSecond, int maxGapToFillMs = 400)
     {
         _bytesPerMillisecond = Math.Max(1, averageBytesPerSecond) / 1000.0;
         _maxGapToFillMs = maxGapToFillMs;
