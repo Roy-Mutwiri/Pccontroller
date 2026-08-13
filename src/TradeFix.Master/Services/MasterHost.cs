@@ -70,6 +70,8 @@ public sealed class MasterHost : IAsyncDisposable
     private const string SharedAudioSourceId = "desktop-audio";
     private readonly HashSet<string> _audioEnabledSources = new();
     private AudioCaptureService? _sharedAudioCapture;
+    private DateTimeOffset _lastAudioWatchdogAt;
+    private bool _audioCaptureWasDown;
 
     private readonly object _adaptiveLock = new();
     private readonly Dictionary<string, AdaptiveEncodingController> _adaptiveControllers = new();
@@ -161,13 +163,18 @@ public sealed class MasterHost : IAsyncDisposable
         var pairingCodes = new PairingCodeRepository(dbFactory);
         Pairing = new PairingService(pairingCodes);
         Assets = new AssetStore(Path.Combine(AppPaths.DataRoot("Master"), "assets"));
-        // Video gets a ~384KB per-subscriber byte budget: bursts of H.264 chunks buffer (a drop
+        // Video gets a ~128KB per-subscriber byte budget: bursts of H.264 chunks buffer (a drop
         // would corrupt the picture until the next keyframe) while total backlog — and therefore
-        // standing latency — stays bounded (~0.4s on an 8Mbps link). Large JPEG fallback frames
-        // exceed the budget and naturally evict older ones, so latest-frame-wins still holds
-        // there with no mode switch. Audio uses budget 0 (strict latest-wins) — chunks are
-        // independent and timestamped, and the Agent's AudioSyncGapFiller silence-fills drops.
-        MediaHub = new MediaHub(Log, subscriberQueueBudgetBytes: 384 * 1024);
+        // standing latency — stays bounded. Sized for the slowest real link, not the average one:
+        // on a Tailscale RELAYED path (~2Mbps, common when direct NAT traversal fails) 128KB caps
+        // queued latency at ~0.5s, where the old 384KB allowed 1.5s+ of standing lag; on fast
+        // links the queue simply never fills, so nothing is lost. A single frame larger than the
+        // budget still passes (evict-then-admit in MediaHub), and the evictions this triggers on
+        // slow links are exactly the AdaptiveEncodingController's step-down signal — a tighter
+        // budget also makes quality auto-reduction kick in sooner instead of buffering blindly.
+        // Audio uses budget 0 (strict latest-wins) — chunks are independent and timestamped, and
+        // the Agent's AudioSyncGapFiller silence-fills drops.
+        MediaHub = new MediaHub(Log, subscriberQueueBudgetBytes: 128 * 1024);
         AudioHub = new MediaHub(Log);
 
         Server = new MasterServer(Registry, pairedNodes, pairingCodes, settings.ServerName, AppVersion, Log, Assets, MediaHub, AudioHub);
@@ -194,6 +201,7 @@ public sealed class MasterHost : IAsyncDisposable
             {
                 FlushDirtyTransforms();
                 TickAdaptiveControllers();
+                EnsureAudioCaptureAlive();
             }
             catch (Exception ex)
             {
@@ -646,20 +654,102 @@ public sealed class MasterHost : IAsyncDisposable
                 return; // already running for another source — every source hears the same desktop audio
             }
 
-            try
+            TryStartSharedAudioCaptureLocked();
+        }
+    }
+
+    /// <summary>Must hold <see cref="_capturesLock"/>. Failure degrades to silent video (never
+    /// crashes a broadcast) — but is NOT permanent: <see cref="EnsureAudioCaptureAlive"/> keeps
+    /// retrying, so plugging in speakers later brings sound back on its own.</summary>
+    private void TryStartSharedAudioCaptureLocked()
+    {
+        try
+        {
+            var audioCapture = new AudioCaptureService();
+            audioCapture.ChunkCaptured += (bytes, timestampMs) =>
+                AudioHub.BroadcastFrameAsync(SharedAudioSourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
+            audioCapture.Start();
+            _sharedAudioCapture = audioCapture;
+            if (_audioCaptureWasDown)
             {
-                var audioCapture = new AudioCaptureService();
-                audioCapture.ChunkCaptured += (bytes, timestampMs) =>
-                    AudioHub.BroadcastFrameAsync(SharedAudioSourceId, AudioChunkFraming.Encode(timestampMs, bytes), CancellationToken.None);
-                audioCapture.Start();
-                _sharedAudioCapture = audioCapture;
+                _audioCaptureWasDown = false;
+                Log.Write(LogCategory.Audio, "MasterHost", "Audio capture recovered — nodes are receiving sound again");
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            // WASAPI loopback throws when this PC has no default audio output device
+            // (headless box, RDP without audio, everything unplugged). That must degrade to
+            // silent video, not crash the whole broadcast on an "Add Capture Source" click.
+            if (!_audioCaptureWasDown)
             {
-                // WASAPI loopback throws when this PC has no default audio output device
-                // (headless box, RDP without audio, everything unplugged). That must degrade to
-                // silent video, not crash the whole broadcast on an "Add Capture Source" click.
+                _audioCaptureWasDown = true;
                 Log.Write(LogCategory.Error, "MasterHost", "No audio output device available — capture continues without audio", ex);
+            }
+        }
+    }
+
+    /// <summary>Audio self-heal, ticked from the broadcast timer (~every 5s): a capture that
+    /// never started (no device at the time) or died mid-run (default output device changed —
+    /// the pump stops cleanly; see AudioCaptureService.PumpAsync) used to mean silence forever
+    /// with only a log line to show for it. Now it just comes back.</summary>
+    private void EnsureAudioCaptureAlive()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastAudioWatchdogAt < TimeSpan.FromSeconds(5))
+        {
+            return;
+        }
+
+        _lastAudioWatchdogAt = now;
+        lock (_capturesLock)
+        {
+            if (_audioEnabledSources.Count == 0)
+            {
+                return; // no source wants audio — nothing to heal
+            }
+
+            if (_sharedAudioCapture is { IsRunning: true })
+            {
+                return;
+            }
+
+            if (_sharedAudioCapture is not null)
+            {
+                if (!_audioCaptureWasDown)
+                {
+                    _audioCaptureWasDown = true;
+                    Log.Write(LogCategory.Error, "MasterHost", "Audio capture stopped (output device changed or removed) — retrying automatically");
+                }
+
+                _sharedAudioCapture.Dispose();
+                _sharedAudioCapture = null;
+            }
+
+            TryStartSharedAudioCaptureLocked();
+        }
+    }
+
+    /// <summary>True when at least one capture source wants audio — with <see cref="AudioCaptureHealthy"/>,
+    /// drives the Master UI's plain-language "nodes are getting no sound" warning.</summary>
+    public bool AudioCaptureWanted
+    {
+        get
+        {
+            lock (_capturesLock)
+            {
+                return _audioEnabledSources.Count > 0;
+            }
+        }
+    }
+
+    public bool AudioCaptureHealthy
+    {
+        get
+        {
+            lock (_capturesLock)
+            {
+                return _sharedAudioCapture is { IsRunning: true };
             }
         }
     }

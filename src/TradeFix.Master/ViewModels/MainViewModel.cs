@@ -52,6 +52,11 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string? _networkFixLabel;
     [ObservableProperty] private bool _isFixingNetwork;
 
+    /// <summary>Plain-language "nodes are getting no sound and here's why" banner — nodes hear
+    /// exactly what this PC plays out loud, so a missing/muted/near-silent output device here is
+    /// invisible locally but silences every node. Null when audio is healthy or unused.</summary>
+    [ObservableProperty] private string? _audioWarning;
+
     private enum NetworkIssue { None, WindowsBlocking, TailscaleSignedOut, TailscaleUnreachable, PortConflict }
     private NetworkIssue _networkIssue;
     private bool _healthCheckRunning;
@@ -245,6 +250,49 @@ public sealed partial class MainViewModel : ObservableObject
         finally
         {
             _healthCheckRunning = false;
+        }
+
+        await RunAudioHealthCheckAsync();
+    }
+
+    /// <summary>Why a node hears nothing, in words an operator can act on. Checked in order of
+    /// certainty: capture dead (device missing/changed — MasterHost's watchdog is already
+    /// retrying), then device muted / volume near zero (loopback capture records POST-volume
+    /// audio, so these silence every node while sounding like nothing is wrong locally).</summary>
+    private async Task RunAudioHealthCheckAsync()
+    {
+        try
+        {
+            if (!_host.AudioCaptureWanted)
+            {
+                AudioWarning = null;
+                return;
+            }
+
+            if (!_host.AudioCaptureHealthy)
+            {
+                AudioWarning =
+                    "Nodes are getting no sound: this PC has no working audio output device. Plug in " +
+                    "speakers or headphones — sound reaching the nodes is whatever this PC plays out loud. " +
+                    "It reconnects automatically once a device appears.";
+                return;
+            }
+
+            var deviceState = await Task.Run(TradeFix.Sources.Audio.AudioOutputDeviceStatus.Probe);
+            AudioWarning = deviceState switch
+            {
+                TradeFix.Sources.Audio.AudioOutputDeviceStatus.State.Muted =>
+                    "Nodes are getting silence: this PC is MUTED. Click the speaker icon by the clock and unmute — " +
+                    "nodes hear exactly what this PC plays.",
+                TradeFix.Sources.Audio.AudioOutputDeviceStatus.State.VolumeVeryLow =>
+                    "Nodes are getting near-silence: this PC's volume is almost zero. Turn the volume up — " +
+                    "nodes hear exactly what this PC plays.",
+                _ => null
+            };
+        }
+        catch
+        {
+            // never let an audio probe disturb the app
         }
     }
 

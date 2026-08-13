@@ -326,6 +326,12 @@
                         </StackPanel>
                     </Border>
 
+                    <Border Background="{StaticResource Brush.SurfaceAlt}" BorderBrush="{StaticResource Brush.Warning}"
+                            BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="0,14,0,0"
+                            Visibility="{Binding AudioWarning, Converter={StaticResource NullToVisibility}}">
+                        <TextBlock Text="{Binding AudioWarning}" TextWrapping="Wrap" Foreground="{StaticResource Brush.Warning}" />
+                    </Border>
+
                     <!-- PROGRAM: add/drag/resize sources here — every connected node mirrors the active scene live. -->
                     <DockPanel Margin="0,24,0,10">
                         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
