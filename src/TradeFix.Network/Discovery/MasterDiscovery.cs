@@ -65,31 +65,136 @@ public static class MasterDiscovery
 
     private static async Task<IReadOnlyList<DiscoveredMaster>> ProbeLanBroadcastAsync(CancellationToken cancellationToken)
     {
-        var found = new List<DiscoveredMaster>();
-        using var udp = new UdpClient { EnableBroadcast = true };
         var probe = Encoding.UTF8.GetBytes(DiscoveryProtocol.ProbeMessage);
-        await udp.SendAsync(probe, new IPEndPoint(IPAddress.Broadcast, DiscoveryProtocol.Port), cancellationToken);
-        await udp.SendAsync(probe, new IPEndPoint(IPAddress.Loopback, DiscoveryProtocol.Port), cancellationToken);
 
-        using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        window.CancelAfter(TimeSpan.FromMilliseconds(1500));
+        // One unbound socket (default route + loopback) PLUS one socket bound to each up IPv4
+        // interface address. The unbound broadcast follows the DEFAULT route — and when a VPN is
+        // active, the VPN owns the default route, so the probe disappears into the tunnel and
+        // same-LAN discovery silently dies even though the LAN is fine (field report: "when I use
+        // VPN the app doesn't work but they are on the same network"). Binding a sender to every
+        // interface pushes the probe out of every NIC — Wi-Fi, ethernet, and tunnels alike — and
+        // whichever one the Master actually lives on carries the reply back on that same socket,
+        // with the Master's address as reachable via THAT interface.
+        var sockets = new List<UdpClient>();
         try
         {
-            while (true)
+            try
             {
-                var datagram = await udp.ReceiveAsync(window.Token);
-                if (DiscoveryProtocol.TryParseReply(Encoding.UTF8.GetString(datagram.Buffer), out var name, out var port))
+                var defaultSocket = new UdpClient { EnableBroadcast = true };
+                sockets.Add(defaultSocket);
+                await defaultSocket.SendAsync(probe, new IPEndPoint(IPAddress.Broadcast, DiscoveryProtocol.Port), cancellationToken);
+                await defaultSocket.SendAsync(probe, new IPEndPoint(IPAddress.Loopback, DiscoveryProtocol.Port), cancellationToken);
+            }
+            catch
+            {
+                // even the default socket failing must not sink the per-interface probes
+            }
+
+            foreach (var (localAddress, subnetBroadcast) in EnumerateInterfaceBroadcastTargets())
+            {
+                try
                 {
-                    found.Add(new DiscoveredMaster(name, datagram.RemoteEndPoint.Address.ToString(), port));
+                    var socket = new UdpClient(new IPEndPoint(localAddress, 0)) { EnableBroadcast = true };
+                    sockets.Add(socket);
+                    await socket.SendAsync(probe, new IPEndPoint(IPAddress.Broadcast, DiscoveryProtocol.Port), cancellationToken);
+                    if (subnetBroadcast is not null && !subnetBroadcast.Equals(IPAddress.Broadcast))
+                    {
+                        // Subnet-directed broadcast (e.g. 192.168.1.255) — some networks/drivers
+                        // deliver it where the global 255.255.255.255 gets filtered.
+                        await socket.SendAsync(probe, new IPEndPoint(subnetBroadcast, DiscoveryProtocol.Port), cancellationToken);
+                    }
+                }
+                catch
+                {
+                    // an interface that refuses to bind or send simply doesn't participate
+                }
+            }
+
+            using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            window.CancelAfter(TimeSpan.FromMilliseconds(1500));
+
+            var found = new System.Collections.Concurrent.ConcurrentBag<DiscoveredMaster>();
+            await Task.WhenAll(sockets.Select(async socket =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        var datagram = await socket.ReceiveAsync(window.Token);
+                        if (DiscoveryProtocol.TryParseReply(Encoding.UTF8.GetString(datagram.Buffer), out var name, out var port))
+                        {
+                            found.Add(new DiscoveredMaster(name, datagram.RemoteEndPoint.Address.ToString(), port));
+                        }
+                    }
+                }
+                catch
+                {
+                    // listen window elapsed (or this socket faulted) — normal end of collection
+                }
+            }));
+
+            return found.ToList();
+        }
+        finally
+        {
+            foreach (var socket in sockets)
+            {
+                socket.Dispose();
+            }
+        }
+    }
+
+    /// <summary>Every up, non-loopback IPv4 interface address on this PC, each with its
+    /// subnet-directed broadcast address when the mask allows computing one. This is what makes
+    /// discovery interface-aware instead of default-route-dependent.</summary>
+    private static IReadOnlyList<(IPAddress LocalAddress, IPAddress? SubnetBroadcast)> EnumerateInterfaceBroadcastTargets()
+    {
+        var targets = new List<(IPAddress, IPAddress?)>();
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up
+                    || nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                {
+                    continue;
+                }
+
+                foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (unicast.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                    {
+                        continue;
+                    }
+
+                    IPAddress? subnetBroadcast = null;
+                    try
+                    {
+                        var addressBytes = unicast.Address.GetAddressBytes();
+                        var maskBytes = unicast.IPv4Mask.GetAddressBytes();
+                        var broadcastBytes = new byte[4];
+                        for (var i = 0; i < 4; i++)
+                        {
+                            broadcastBytes[i] = (byte)(addressBytes[i] | ~maskBytes[i]);
+                        }
+
+                        subnetBroadcast = new IPAddress(broadcastBytes);
+                    }
+                    catch
+                    {
+                        // no usable mask (e.g. a point-to-point tunnel) — global broadcast only
+                    }
+
+                    targets.Add((unicast.Address, subnetBroadcast));
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch
         {
-            // listen window elapsed — normal end of collection
+            // interface enumeration unavailable — the default-route socket still probes
         }
 
-        return found;
+        return targets;
     }
 
     private static async Task<IReadOnlyList<DiscoveredMaster>> ProbeTailscalePeersAsync(int controlPort, CancellationToken cancellationToken)
