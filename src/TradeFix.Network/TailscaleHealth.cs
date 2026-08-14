@@ -226,6 +226,23 @@ public static class TailscaleHealth
         }
     }
 
+    /// <summary>Whether this PC can actually reach the internet — used to tell "Tailscale is
+    /// blocked (usually by a VPN)" apart from "there is genuinely no internet", which need
+    /// completely different operator guidance. Probes Windows' own connectivity-check endpoint.</summary>
+    public static async Task<bool> ProbeInternetAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            using var response = await http.GetAsync("http://www.msftconnecttest.com/connecttest.txt", cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Kicks off the interactive sign-in: <c>tailscale login</c> opens the account page
     /// in the default browser. Fire-and-forget — completion shows up in the next status poll.</summary>
     public static void OpenLoginFlow()

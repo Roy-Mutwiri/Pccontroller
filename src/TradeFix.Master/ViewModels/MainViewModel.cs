@@ -228,10 +228,27 @@ public sealed partial class MainViewModel : ObservableObject
                     NetworkFixLabel = "Try again";
                     break;
                 case TailscaleBackendState.Running when !tailscale.SelfOnline:
+                    // Two very different situations produce this state, and only a real internet
+                    // probe tells them apart: a VPN blocking Tailscale (internet fine, LAN nodes
+                    // completely unaffected — a calm heads-up, not an alarm) vs genuinely no
+                    // internet. The field report behind this: turning on a VPN made the banner
+                    // claim "not connected to the internet" on a PC whose network was fine.
                     _networkIssue = NetworkIssue.TailscaleUnreachable;
-                    StartupWarning =
-                        "This PC doesn't seem to be connected to the internet — render nodes on other networks " +
-                        "can't reach it. Check the Wi-Fi/network connection.";
+                    if (await TailscaleHealth.ProbeInternetAsync())
+                    {
+                        StartupWarning =
+                            "Tailscale can't connect right now — a VPN on this PC is most likely blocking it. " +
+                            "Render nodes on THIS network still connect normally; only nodes on OTHER networks " +
+                            "can't reach this Master until the VPN allows Tailscale (look for an 'Allow LAN/local " +
+                            "traffic' or split-tunneling setting) or is turned off.";
+                    }
+                    else
+                    {
+                        StartupWarning =
+                            "This PC doesn't seem to be connected to the internet — render nodes on other networks " +
+                            "can't reach it (nodes on this same network are unaffected). Check the Wi-Fi/network connection.";
+                    }
+
                     NetworkFixLabel = "Check again";
                     break;
                 default:
