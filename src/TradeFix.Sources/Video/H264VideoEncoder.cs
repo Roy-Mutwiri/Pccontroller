@@ -190,6 +190,20 @@ public sealed class H264VideoEncoder : IDisposable
         }
 
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("ffmpeg failed to start");
+        try
+        {
+            // Video encoding is the single biggest CPU consumer on a Master, and on a weak PC it
+            // starves everything sharing the machine — most audibly the audio capture pump, whose
+            // late chunks become voice delay on every node. BelowNormal inverts that: audio, the
+            // capture loop, and the UI stay on time, and the encoder absorbs whatever is left
+            // (worst case it just paces slower, which the adaptive controller already handles).
+            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+        }
+        catch
+        {
+            // priority is an optimization, never worth failing the pipeline over
+        }
+
         _process = process;
         _currentWidth = width;
         _currentHeight = height;

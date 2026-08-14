@@ -31,7 +31,7 @@ public sealed class AudioCaptureService : IDisposable
     private BufferedWaveProvider? _sourceBuffer;
     private IWaveProvider? _outputProvider;
     private CancellationTokenSource? _cts;
-    private Task? _pumpTask;
+    private Thread? _pumpThread;
 
     /// <summary>Fires with a chunk of raw 16-bit PCM (little-endian, mono unless
     /// <paramref name="channels"/> &gt; 1) roughly every 100ms, plus the cumulative captured-audio
@@ -49,7 +49,7 @@ public sealed class AudioCaptureService : IDisposable
 
     public WaveFormat Format => _targetFormat;
 
-    public bool IsRunning => _pumpTask is { IsCompleted: false };
+    public bool IsRunning => _pumpThread is { IsAlive: true };
 
     public void Start()
     {
@@ -62,7 +62,16 @@ public sealed class AudioCaptureService : IDisposable
         _sourceBuffer = new BufferedWaveProvider(_capture.WaveFormat)
         {
             DiscardOnBufferOverflow = true,
-            BufferDuration = TimeSpan.FromSeconds(2)
+            BufferDuration = TimeSpan.FromSeconds(2),
+            // CRITICAL — measured, not theoretical: BufferedWaveProvider's default ReadFully=true
+            // ZERO-PADS every read to the requested length, so the pump's "read until the buffer
+            // runs dry" loop never saw a short read and emitted its full 10-chunk drain every
+            // tick: 1 chunk of real audio + 9 chunks of silence, 10x real-time, with timestamps
+            // racing 10x ahead of the true timeline (probe: 300 chunks / 29.9s of claimed audio
+            // in 3 real seconds). Downstream that was the entire family of field audio bugs —
+            // desync, standing lag, shredded/no sound. false = a read returns only genuinely
+            // captured audio, which is what the pacing loop was written to expect.
+            ReadFully = false
         };
 
         ISampleProvider sampleProvider = _sourceBuffer.ToSampleProvider();
@@ -81,41 +90,58 @@ public sealed class AudioCaptureService : IDisposable
         _capture.StartRecording();
 
         _cts = new CancellationTokenSource();
-        _pumpTask = Task.Run(() => PumpAsync(_cts.Token));
+        // A dedicated above-normal-priority thread, NOT Task.Run: on a Master whose CPU is
+        // saturated by video encoding, thread-pool scheduling delays the 100ms pump ticks —
+        // chunks then leave in late catch-up bursts, which downstream becomes audible audio
+        // delay on every node ("the voice has lags"). Audio is a trivial fraction of the CPU;
+        // letting it preempt video work keeps the voice on time even when the encoder is
+        // drowning (the encoder process itself also runs BelowNormal — see H264VideoEncoder).
+        // The loop is fully synchronous on purpose: any await would resume on the thread pool,
+        // silently abandoning this thread and its priority.
+        _pumpThread = new Thread(() => Pump(_cts.Token))
+        {
+            IsBackground = true,
+            Name = "tfx-audio-pump",
+            Priority = ThreadPriority.AboveNormal
+        };
+        _pumpThread.Start();
     }
 
-    private async Task PumpAsync(CancellationToken cancellationToken)
+    private void Pump(CancellationToken cancellationToken)
     {
         // ~100ms chunks: small enough for low latency, large enough not to flood the network
-        // with tiny messages. Paced to roughly real-time so each read has genuine newly-captured
-        // audio to consume rather than racing ahead of the capture callback.
-        var chunkDuration = TimeSpan.FromMilliseconds(100);
+        // with tiny messages. Paced against a Stopwatch to absolute tick targets so a late tick
+        // doesn't shift the whole schedule — the next tick simply comes sooner.
+        const int chunkMs = 100;
         var chunkBytes = Math.Max(64, _targetFormat.AverageBytesPerSecond / 10);
         var buffer = new byte[chunkBytes];
         var bytesPerMillisecond = Math.Max(1, _targetFormat.AverageBytesPerSecond / 1000.0);
         var cumulativeBytesCaptured = 0L;
 
-        using var timer = new PeriodicTimer(chunkDuration);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        long nextTickMs = chunkMs;
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            try
+            var waitMs = nextTickMs - clock.ElapsedMilliseconds;
+            if (waitMs > 0 && cancellationToken.WaitHandle.WaitOne((int)waitMs))
             {
-                if (!await timer.WaitForNextTickAsync(cancellationToken))
-                {
-                    break;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
+                break; // cancelled while waiting for the next tick
             }
 
-            // Read every full chunk currently buffered, not just one per tick: PeriodicTimer
-            // coalesces missed ticks, so a one-chunk-per-tick pump that ever falls behind
-            // (UI stall, scheduler hiccup) stays behind forever — audio arrives late by the
-            // accumulated backlog. Draining per tick means a hiccup adds latency once and the
-            // next tick catches back up to live.
+            nextTickMs += chunkMs;
+            if (clock.ElapsedMilliseconds > nextTickMs + 1000)
+            {
+                // Fell absurdly far behind (system sleep, debugger) — rebase rather than
+                // rapid-firing a tick per missed interval.
+                nextTickMs = clock.ElapsedMilliseconds + chunkMs;
+            }
+
+            // Read every full chunk currently buffered, not just one per tick: a late tick means
+            // more than one chunk of audio is waiting, and a one-chunk-per-tick pump that ever
+            // falls behind stays behind forever — audio arrives late by the accumulated backlog.
+            // Draining per tick means a hiccup adds latency once and the next tick catches back
+            // up to live.
             for (var drained = 0; drained < 10; drained++)
             {
                 int read;
@@ -141,7 +167,10 @@ public sealed class AudioCaptureService : IDisposable
                     cumulativeBytesCaptured += read;
                     try
                     {
-                        await ChunkCaptured.Invoke(chunk, timestampMs);
+                        // Handlers post to MediaHub subscriber queues, which is non-blocking —
+                        // waiting the returned task here keeps chunk order deterministic without
+                        // ever parking this thread on real I/O.
+                        ChunkCaptured.Invoke(chunk, timestampMs).GetAwaiter().GetResult();
                     }
                     catch
                     {

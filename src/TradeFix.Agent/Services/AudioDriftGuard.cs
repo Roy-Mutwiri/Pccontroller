@@ -19,7 +19,11 @@ namespace TradeFix.Agent.Services;
 /// </summary>
 public sealed class AudioDriftGuard(TimeSpan? maxStandingDelay = null, int windowChunks = 20)
 {
-    private readonly TimeSpan _maxStandingDelay = maxStandingDelay ?? TimeSpan.FromMilliseconds(400);
+    // 250ms standing tolerance: with the Master's audio pump now running at elevated priority
+    // (bursts are the exception, not the norm), the buffer floor sits near zero on a healthy
+    // link — anything persistently above a quarter second is genuine dead weight, and clearing
+    // it keeps the voice within a blink of the video instead of noticeably trailing it.
+    private readonly TimeSpan _maxStandingDelay = maxStandingDelay ?? TimeSpan.FromMilliseconds(250);
     private readonly int _windowChunks = Math.Max(1, windowChunks);
 
     /// <summary>Backstop for the pathological case (PC slept, device stalled for seconds): don't
